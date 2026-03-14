@@ -12,7 +12,7 @@ export async function GET() {
         "Cache-Control": "no-store, no-cache, must-revalidate",
       },
     });
-  } catch (error) {
+  } catch {
     return new NextResponse("Error generating metrics", { status: 500 });
   }
 }

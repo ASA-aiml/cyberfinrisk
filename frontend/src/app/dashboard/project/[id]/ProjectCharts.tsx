@@ -61,7 +61,8 @@ export default function ProjectCharts() {
                                 formatter={v => <span style={{ color: "var(--muted-foreground)", fontSize: 11 }}>{v}</span>}
                             />
                             <Tooltip
-                                formatter={(v: number) => [fmtMoney(v), "Loss"]}
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                formatter={(v: any) => [fmtMoney(Number(v)), "Loss"]}
                                 contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}
                             />
                         </PieChart>
@@ -81,7 +82,8 @@ export default function ProjectCharts() {
                         <XAxis type="number" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} />
                         <YAxis dataKey="name" type="category" tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} width={100} />
                         <Tooltip
-                            formatter={(v: number) => [`${v}×`, "ROI"]}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            formatter={(v: any) => [`${v}×`, "ROI"]}
                             contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}
                         />
                         <Bar dataKey="roi" fill="var(--orange)" radius={4} />

@@ -78,7 +78,8 @@ export default function ReportsPage() {
                                 ))}
                             </Pie>
                             <Tooltip
-                                formatter={(v: number) => [fmtMoney(v), "Cost"]}
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                formatter={(v: any) => [fmtMoney(Number(v)), "Cost"]}
                                 contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }}
                             />
                             <Legend

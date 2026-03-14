@@ -18,7 +18,7 @@ import {
     ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { TEAMS } from "@/lib/mock-data";
+import { ORGANIZATIONS } from "@/lib/mock-data";
 
 const NAV_MAIN = [
     { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
@@ -36,7 +36,8 @@ const NAV_TEAM = [
 export default function Sidebar() {
     const pathname = usePathname();
     const [teamOpen, setTeamOpen] = useState(false);
-    const [activeTeam, setActiveTeam] = useState(TEAMS[1]); // Acme Corp
+    const [activeOrg, setActiveOrg] = useState(ORGANIZATIONS[1]!); // Acme Corp
+    const [activeTeam, setActiveTeam] = useState(ORGANIZATIONS[1]!.teams[0]!); // Frontend Team
 
     function isActive(href: string) {
         if (href === "/dashboard") return pathname === "/dashboard";
@@ -77,35 +78,53 @@ export default function Sidebar() {
                         className="w-5 h-5 rounded flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
                         style={{ background: "var(--blue)" }}
                     >
-                        {activeTeam.name[0]}
+                        {activeOrg.name[0]}
                     </span>
-                    <span className="flex-1 truncate font-medium">{activeTeam.name}</span>
+                    <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <span className="truncate font-medium leading-tight">{activeTeam.name}</span>
+                        <span className="text-[11px] truncate leading-tight mt-0.5" style={{ color: "var(--muted)" }}>{activeOrg.name}</span>
+                    </div>
                     <ChevronDown size={14} style={{ color: "var(--muted)" }} className={cn("transition-transform", teamOpen && "rotate-180")} />
                 </button>
 
                 {teamOpen && (
                     <div
-                        className="mt-1 rounded-lg overflow-hidden"
-                        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+                        className="mt-1 rounded-lg overflow-hidden py-1 shadow-xl"
+                        style={{ background: "var(--surface)", border: "1px solid var(--border)", maxHeight: "calc(100vh - 200px)", overflowY: "auto" }}
                     >
-                        {TEAMS.map(t => (
-                            <button
-                                key={t.id}
-                                onClick={() => { setActiveTeam(t); setTeamOpen(false); }}
-                                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm hover:bg-zinc-700 transition-colors"
-                            >
-                                <span
-                                    className="w-5 h-5 rounded flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
-                                    style={{ background: "var(--blue)" }}
-                                >
-                                    {t.name[0]}
-                                </span>
-                                <span className="flex-1 text-left">
-                                    <div className="font-medium">{t.name}</div>
-                                    <div className="text-[11px]" style={{ color: "var(--muted)" }}>{t.plan}</div>
-                                </span>
-                                {activeTeam.id === t.id && <Check size={12} style={{ color: "var(--green)" }} />}
-                            </button>
+                        {ORGANIZATIONS.map(org => (
+                            <div key={org.id} className="mb-2 last:mb-0">
+                                <div className="px-3 py-1.5 flex items-center gap-2">
+                                     <span
+                                        className="w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
+                                        style={{ background: "var(--blue)" }}
+                                    >
+                                        {org.name[0]}
+                                    </span>
+                                    <span className="text-[11px] font-semibold tracking-wider uppercase flex-1 truncate" style={{ color: "var(--muted)" }}>
+                                        {org.name}
+                                    </span>
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded-sm font-medium uppercase tracking-wider" style={{ background: "var(--surface2)", color: "var(--muted-foreground)" }}>
+                                        {org.plan}
+                                    </span>
+                                </div>
+                                <div className="mt-0.5">
+                                    {org.teams.map(t => (
+                                        <button
+                                            key={t.id}
+                                            onClick={() => { setActiveOrg(org); setActiveTeam(t); setTeamOpen(false); }}
+                                            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm hover:bg-zinc-700 transition-colors pl-[38px]"
+                                        >
+                                            <span className="flex-1 text-left">
+                                                <div className="font-medium text-[13px]" style={{ color: activeTeam.id === t.id ? "white" : "var(--muted-foreground)" }}>
+                                                    {t.name}
+                                                </div>
+                                            </span>
+                                            {activeTeam.id === t.id && <Check size={14} style={{ color: "var(--green)" }} />}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
                         ))}
                     </div>
                 )}

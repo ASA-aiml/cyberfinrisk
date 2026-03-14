@@ -62,11 +62,11 @@ export default function ScanPage() {
         setProgress(0);
 
         let s = 0;
-        setStep(STEPS[0]);
+        setStep(STEPS[0]!);
         const interval = setInterval(() => {
             s += 1;
             setProgress(Math.min(s * 20, 100));
-            if (s < STEPS.length) setStep(STEPS[s]);
+            if (s < STEPS.length) setStep(STEPS[s]!);
             if (s >= 5) {
                 clearInterval(interval);
                 setState("done");

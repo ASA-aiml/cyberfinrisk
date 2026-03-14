@@ -295,12 +295,48 @@ export const COMPLIANCE_FINES = [
     { regulation: "CCPA", fine: 75_000 },
 ];
 
-// ── Teams ─────────────────────────────────────────────────────────────────────
+// ── Organizations & Teams ─────────────────────────────────────────────────────
 
-export const TEAMS = [
-    { id: "personal", name: "Personal", plan: "Free" },
-    { id: "acme", name: "Acme Corp", plan: "Pro" },
-    { id: "security-research", name: "Security Research", plan: "Enterprise" },
+export interface Team {
+    id: string;
+    name: string;
+}
+
+export interface Organization {
+    id: string;
+    name: string;
+    plan: string;
+    teams: Team[];
+}
+
+export const ORGANIZATIONS: Organization[] = [
+    {
+        id: "org-personal",
+        name: "Personal",
+        plan: "Free",
+        teams: [
+            { id: "personal-projects", name: "Personal Projects" }
+        ]
+    },
+    {
+        id: "org-acme",
+        name: "Acme Corp",
+        plan: "Pro",
+        teams: [
+            { id: "acme-frontend", name: "Frontend Team" },
+            { id: "acme-backend", name: "Backend Team" }
+        ]
+    },
+    {
+        id: "org-security",
+        name: "Security Research",
+        plan: "Enterprise",
+        teams: [
+            { id: "sec-red", name: "Red Team" },
+            { id: "sec-blue", name: "Blue Team" },
+            { id: "sec-auditors", name: "Internal Auditors" }
+        ]
+    }
 ];
 
 // ── Mock scan result (used after form submit) ─────────────────────────────────
