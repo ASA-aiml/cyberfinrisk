@@ -438,6 +438,142 @@ async def list_demo_presets():
     return _load_demo_presets()
 
 
+# ==========================================
+# Dashboard Metrics (aggregated from MongoDB)
+# ==========================================
+
+@app.get("/api/dashboard/metrics")
+async def dashboard_metrics(org_id: Optional[str] = None, group_id: Optional[str] = None):
+    """
+    Aggregate real scan data across all projects for the dashboard.
+    Returns metrics, severity breakdown, risk-by-type, and loss-over-time.
+    """
+    mongo = get_mongo_db()
+    if mongo is None:
+        return _empty_dashboard()
+
+    # Build filter
+    filt: dict = {"status": "completed"}
+    if org_id:
+        filt["org_id"] = org_id
+    if group_id:
+        filt["group_id"] = group_id
+
+    projects = await mongo["projects"].find(filt).to_list(length=500)
+
+    if not projects:
+        return _empty_dashboard()
+
+    total_projects = len(projects)
+    total_vulns = 0
+    total_loss = 0.0
+    total_fix_cost = 0.0
+    total_chains = 0
+    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "warning": 0, "error": 0}
+    risk_by_type: dict = {}  # bug_type -> {count, loss}
+    loss_by_date: dict = {}  # date_str -> cumulative loss
+    last_scan_at = None
+    last_scan_repo = ""
+
+    for p in projects:
+        total_vulns += p.get("vulnerability_count", 0)
+        total_loss += p.get("total_expected_loss", 0)
+        total_fix_cost += p.get("total_fix_cost", 0)
+        total_chains += len(p.get("attack_chains", []))
+
+        scan_date = p.get("last_scanned_at") or p.get("created_at", "")
+        if scan_date and (last_scan_at is None or scan_date > last_scan_at):
+            last_scan_at = scan_date
+            last_scan_repo = p.get("repo_url", "")
+
+        # Date for loss-over-time (group by day)
+        date_key = scan_date[:10] if scan_date else "unknown"
+        loss_by_date[date_key] = loss_by_date.get(date_key, 0) + p.get("total_expected_loss", 0)
+
+        # Per-vulnerability aggregation
+        for v in p.get("scan_results", []):
+            sev = v.get("severity", "medium").lower()
+            # Map semgrep severity names to standard levels
+            if sev in ("error",):
+                severity_counts["critical"] = severity_counts.get("critical", 0) + 1
+            elif sev in ("warning",):
+                severity_counts["high"] = severity_counts.get("high", 0) + 1
+            elif sev in severity_counts:
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+            else:
+                severity_counts["medium"] = severity_counts.get("medium", 0) + 1
+
+            bt = v.get("bug_type", "Unknown")
+            if bt not in risk_by_type:
+                risk_by_type[bt] = {"name": bt, "count": 0, "loss": 0}
+            risk_by_type[bt]["count"] += 1
+            risk_by_type[bt]["loss"] += v.get("expected_loss", 0)
+
+    # Sort risk_by_type by loss descending, take top 8
+    risk_by_type_list = sorted(risk_by_type.values(), key=lambda x: x["loss"], reverse=True)[:8]
+
+    # Sort loss_over_time by date
+    loss_over_time = sorted(
+        [{"date": k, "loss": round(v, 2)} for k, v in loss_by_date.items() if k != "unknown"],
+        key=lambda x: x["date"]
+    )
+
+    # Extract repo name from last scan URL
+    repo_name = last_scan_repo.rstrip("/").split("/")[-1] if last_scan_repo else ""
+
+    # Format last scan time as relative
+    last_scan_display = "Never"
+    if last_scan_at:
+        try:
+            from datetime import datetime, timezone
+            scan_dt = datetime.fromisoformat(last_scan_at.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            diff = now - scan_dt
+            if diff.days > 0:
+                last_scan_display = f"{diff.days}d ago"
+            elif diff.seconds > 3600:
+                last_scan_display = f"{diff.seconds // 3600}h ago"
+            else:
+                last_scan_display = f"{diff.seconds // 60}m ago"
+        except Exception:
+            last_scan_display = last_scan_at[:10]
+
+    return {
+        "total_projects": total_projects,
+        "total_vulnerabilities": total_vulns,
+        "total_expected_loss": round(total_loss, 2),
+        "total_fix_cost": round(total_fix_cost, 2),
+        "total_attack_chains": total_chains,
+        "last_scan_at": last_scan_at,
+        "last_scan_display": last_scan_display,
+        "last_scan_repo": repo_name,
+        "severity_breakdown": {
+            "critical": severity_counts.get("critical", 0),
+            "high": severity_counts.get("high", 0),
+            "medium": severity_counts.get("medium", 0),
+            "low": severity_counts.get("low", 0),
+        },
+        "risk_by_type": risk_by_type_list,
+        "loss_over_time": loss_over_time,
+    }
+
+
+def _empty_dashboard():
+    return {
+        "total_projects": 0,
+        "total_vulnerabilities": 0,
+        "total_expected_loss": 0,
+        "total_fix_cost": 0,
+        "total_attack_chains": 0,
+        "last_scan_at": None,
+        "last_scan_display": "Never",
+        "last_scan_repo": "",
+        "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "risk_by_type": [],
+        "loss_over_time": [],
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "version": "3.0.0"}

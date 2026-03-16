@@ -192,4 +192,15 @@ export const api = {
         if (user_uuid) endpoint += `&user_uuid=${user_uuid}`;
         return fetchAPI(endpoint, { method: "POST" });
     },
+
+    // ── Dashboard Metrics ────────────────────────────────────────────────────
+
+    async getDashboardMetrics(org_id?: string, group_id?: string): Promise<any> {
+        let endpoint = "/api/dashboard/metrics";
+        const params: string[] = [];
+        if (org_id) params.push(`org_id=${org_id}`);
+        if (group_id) params.push(`group_id=${group_id}`);
+        if (params.length) endpoint += `?${params.join("&")}`;
+        return fetchAPI(endpoint);
+    },
 };
