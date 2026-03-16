@@ -1,6 +1,24 @@
-import subprocess, json, tempfile, shutil, os
+import subprocess, json, tempfile, shutil, os, stat
 from typing import List, Dict
 import git
+
+def _rmtree_windows_safe(path: str) -> None:
+    """
+    Windows-safe rmtree: git sets read-only attributes on .git/objects/pack/ files.
+    shutil.rmtree fails with PermissionError [WinError 5] on these.
+    This handler clears the read-only flag and retries deletion.
+    """
+    def _on_error(func, path, exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass  # Best-effort cleanup — don't crash the scan
+
+    try:
+        shutil.rmtree(path, onerror=_on_error)
+    except Exception as e:
+        print(f"[scanner] Warning: could not fully clean up temp dir {path}: {e}")
 
 def clone_repo(repo_url: str, branch: str = "main") -> str:
     tmp = tempfile.mkdtemp()
