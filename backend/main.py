@@ -17,10 +17,11 @@ logger = setup_logging()
 
 from models.company import CompanyContext
 from models.risk_result import RiskResult, AttackChain
-from engine.scanner import clone_repo, run_semgrep, parse_semgrep_findings, run_trivy, parse_trivy_findings
+from engine.scanner import clone_repo, run_semgrep, parse_semgrep_findings, run_trivy, parse_trivy_findings, _rmtree_windows_safe
 from engine.classifier import classify_bug, get_fix_effort, load_taxonomy
 from engine.probability_model import load_probabilities, get_probability
 from engine.impact_model import compute_total_impact
+from engine.criticality import get_asset_criticality
 from engine.expected_loss import (compute_expected_loss, compute_priority_score,
                                    compute_fix_cost, compute_roi)
 from engine.ranker import rank_vulnerabilities
@@ -71,7 +72,20 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "*",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 # Instrument the app for Prometheus
 Instrumentator().instrument(app).expose(app)
@@ -133,8 +147,11 @@ def run_risk_engine(
                 if asset: break
 
         # Environment & Exposure override based on asset
-        exposure    = asset.exposure.upper() if asset else f.get("exposure", company.deployment_exposure.upper())
-        baseline_p  = get_probability(bug_type, exposure, probabilities)
+        exposure = asset.exposure.upper() if asset else f.get("exposure", company.deployment_exposure.upper())
+
+        # Pass CVE ID for EPSS lookup (EPSS only applies to real CVEs from Trivy)
+        cve_id = f.get("cve_id") or f.get("raw_rule_id", "")
+        baseline_p, prob_source = get_probability(bug_type, exposure, probabilities, cve_id=cve_id)
 
         # --- Gemini analysis ---
         gemini_result = None
@@ -160,7 +177,12 @@ def run_risk_engine(
                     continue  # Actually filter the finding out as per Phase 0 goals
 
         breakdown, total_impact = compute_total_impact(company, bug_type, gemini_result, asset)
-        expected_loss  = compute_expected_loss(effective_p, total_impact)
+
+        # Apply file-path criticality multiplier to expected loss
+        # This makes vulns in payment/auth code weigh more than the same bug in test code
+        _, crit_multiplier, _ = get_asset_criticality(f["file"])
+
+        expected_loss  = compute_expected_loss(effective_p, total_impact) * crit_multiplier
         priority_score = compute_priority_score(expected_loss, fix_effort)
         fix_cost       = compute_fix_cost(fix_effort, company.engineer_hourly_cost)
         roi            = compute_roi(expected_loss, fix_cost)
@@ -709,7 +731,7 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
     finally:
         if repo_path and os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
+            _rmtree_windows_safe(repo_path)
 
     # 3. Build the document
     now = datetime.now(timezone.utc).isoformat()

@@ -45,7 +45,7 @@ Classic chain examples:
 - Path traversal → read credentials → auth bypass → RCE
 - IDOR → enumerate users → credential stuffing → account takeover
 
-Respond ONLY with valid JSON in exactly this format:
+Respond ONLY with valid JSON with NO markdown fences, in exactly this format:
 {{
   "chains": [
     {{
@@ -53,6 +53,7 @@ Respond ONLY with valid JSON in exactly this format:
       "vulnerability_ids": ["VULN_001", "VULN_002"],
       "chain_description": "Plain English description of the full attack path (2-3 sentences, no jargon)",
       "combined_severity": "critical" or "high" or "medium",
+      "chain_endpoint": "rce" or "full_data_exfiltration" or "privilege_escalation" or "partial_data_access" or "information_disclosure",
       "severity_reasoning": "Why chaining makes this worse than the individual bugs",
       "steps": [
         "Step 1: Attacker exploits [VULN_001] to...",
@@ -63,9 +64,12 @@ Respond ONLY with valid JSON in exactly this format:
   ]
 }}
 
-If no meaningful chains exist, return {{"chains": []}}.
-Only include chains where the combination is genuinely more dangerous.
-Write all descriptions for a non-technical CEO audience — no CVE IDs, no jargon."""
+Rules:
+- If no meaningful chains exist, return {{"chains": []}}.
+- Only include chains where the combination is genuinely more dangerous.
+- Write all descriptions for a non-technical CEO audience — no CVE IDs, no jargon.
+- You MUST include `chain_endpoint` — this drives the financial amplifier in our model.
+- Be conservative: only output chains you are highly confident exist."""
 
     try:
         response = model.generate_content(prompt)
@@ -78,9 +82,29 @@ Write all descriptions for a non-technical CEO audience — no CVE IDs, no jargo
 
         chains = []
         for c in data.get("chains", []):
-            # Compute combined expected loss
+            # Compute combined expected loss using tiered severity amplifiers
             involved_results = [r for r in results if r.vulnerability_id in c["vulnerability_ids"]]
-            combined_loss = sum(r.expected_loss for r in involved_results) * 1.5  # 50% amplifier for chaining
+            
+            # Severity-weighted amplifier instead of flat 1.5x
+            # Based on what the attack chain ultimately achieves
+            chain_endpoint = c.get("chain_endpoint", "partial_data_access")
+            severity = c.get("combined_severity", "high")
+            
+            AMPLIFIERS = {
+                "rce":                  2.2,  # Full system control
+                "full_data_exfiltration": 2.0,  # All data stolen
+                "privilege_escalation":  1.7,  # Admin-level access gained
+                "partial_data_access":   1.4,  # Some data exposed
+                "information_disclosure": 1.2,  # Attacker gains info only
+            }
+            # Fallback from severity if endpoint not specified
+            SEVERITY_AMPLIFIERS = {"critical": 2.0, "high": 1.7, "medium": 1.3}
+            
+            amplifier = AMPLIFIERS.get(
+                chain_endpoint,
+                SEVERITY_AMPLIFIERS.get(severity, 1.5)
+            )
+            combined_loss = sum(r.expected_loss for r in involved_results) * amplifier
 
             chains.append(AttackChain(
                 chain_id=c["chain_id"],
