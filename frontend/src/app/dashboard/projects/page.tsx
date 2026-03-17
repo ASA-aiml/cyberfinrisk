@@ -56,10 +56,13 @@ export default function ProjectsPage() {
     const [searchTerm, setSearchTerm] = useState("");
 
     const fetchProjects = async () => {
-        if (!activeOrg) return;
         setLoading(true);
         try {
-            const data = await api.listProjects(activeOrg.id, activeGroup?.id, user?.uid);
+            const data = await api.listProjects(
+                activeOrg?.id,
+                activeGroup?.id,
+                user?.uid
+            );
             setProjects(data);
         } catch (err) {
             console.error("Failed to fetch projects", err);
@@ -151,7 +154,7 @@ export default function ProjectsPage() {
                 <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
                     <div>
                         <h1 className="text-2xl font-bold tracking-tight text-white mb-2">
-                            {activeGroup ? `${activeGroup.name} Projects` : `${activeOrg?.name} Projects`}
+                            {activeGroup ? `${activeGroup.name} Projects` : activeOrg ? `${activeOrg.name} Projects` : "All Scanned Projects"}
                         </h1>
                         <p className="text-sm text-zinc-400">
                             Monitor and manage security risk across your repositories.

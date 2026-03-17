@@ -171,11 +171,13 @@ export const api = {
         });
     },
 
-    async listProjects(org_id: string, group_id?: string, user_uuid?: string): Promise<Project[]> {
-        let endpoint = `/api/projects?org_id=${org_id}`;
-        if (group_id) endpoint += `&group_id=${group_id}`;
-        if (user_uuid) endpoint += `&user_uuid=${user_uuid}`;
-        return fetchAPI(endpoint);
+    async listProjects(org_id?: string, group_id?: string, user_uuid?: string): Promise<Project[]> {
+        const params: string[] = [];
+        if (org_id) params.push(`org_id=${org_id}`);
+        if (group_id) params.push(`group_id=${group_id}`);
+        if (user_uuid) params.push(`user_uuid=${user_uuid}`);
+        const qs = params.length ? `?${params.join("&")}` : "";
+        return fetchAPI(`/api/projects${qs}`);
     },
 
     async getProject(project_id: string): Promise<ProjectDetail> {

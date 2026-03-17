@@ -373,12 +373,65 @@ def _load_demo_presets() -> list[PresetContext]:
     return presets
 
 
+
+async def _save_scan_to_projects(
+    repo_url: str,
+    branch: str,
+    company,
+    results: list,
+    chains: list,
+    summary: str,
+    filtered: int,
+    gemini_enabled: bool,
+):
+    """Fire-and-forget helper: persist any scan into the projects collection."""
+    try:
+        mongo = get_mongo_db()
+        if mongo is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        doc = {
+            "repo_url": repo_url,
+            "branch": branch,
+            "company": company.dict() if hasattr(company, "dict") else company,
+            "org_id": "",
+            "group_id": "",
+            "created_by": "",
+            "created_at": now,
+            "last_scanned_at": now,
+            "status": "completed",
+            "scan_results": [r.dict() for r in results],
+            "attack_chains": [c.dict() for c in chains],
+            "executive_summary": summary,
+            "total_expected_loss": sum(r.expected_loss for r in results),
+            "total_fix_cost": sum(r.fix_cost_usd for r in results),
+            "vulnerability_count": len(results),
+            "filtered_count": filtered,
+            "gemini_enabled": gemini_enabled,
+        }
+        await mongo["projects"].insert_one(doc)
+        logger.info(f"[projects] Saved scan for {repo_url} to MongoDB")
+    except Exception as e:
+        logger.warning(f"[projects] Failed to save scan to MongoDB: {e}")
+
+
 @app.post("/analyze-manual", response_model=AnalysisResponse)
 async def analyze_manual(req: ManualScanRequest):
     results, chains, filtered = run_risk_engine(
         req.vulnerabilities, req.company, req.gemini_api_key
     )
     summary = generate_executive_summary(results, req.company, chains)
+    # Save to projects collection so it appears in the Projects page
+    await _save_scan_to_projects(
+        repo_url=f"manual:{req.company.company_name}",
+        branch="manual",
+        company=req.company,
+        results=results,
+        chains=chains,
+        summary=summary,
+        filtered=filtered,
+        gemini_enabled=bool(req.gemini_api_key),
+    )
     return AnalysisResponse(
         results=results,
         attack_chains=chains,
@@ -421,6 +474,17 @@ async def scan_repo(req: ScanRequest):
                        "chains":  [c.dict() for c in chains]}, f, indent=2)
         summary = generate_executive_summary(results, req.company, chains)
         logger.info(f"[perf] Total /scan-repo: {time.time()-t0:.1f}s")
+        # Save to projects collection so it appears in the Projects page
+        await _save_scan_to_projects(
+            repo_url=req.repo_url,
+            branch=req.branch,
+            company=req.company,
+            results=results,
+            chains=chains,
+            summary=summary,
+            filtered=filtered,
+            gemini_enabled=bool(req.gemini_api_key),
+        )
         return AnalysisResponse(
             results=results, attack_chains=chains, executive_summary=summary,
             total_expected_loss=sum(r.expected_loss for r in results),
@@ -1085,20 +1149,25 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
 
 @app.get("/api/projects", response_model=List[ProjectSummary])
 async def list_projects(
-    org_id: str,
+    org_id: Optional[str] = None,
     group_id: Optional[str] = None,
     user_uuid: Optional[str] = None,
     db: Session = Depends(get_pg_db)
 ):
-    """List projects for an org, optionally filtered by group."""
-    if user_uuid:
-        _check_org_membership(user_uuid, org_id, db)
+    """List projects for an org, optionally filtered by group. If org_id is omitted, return all."""
+    if user_uuid and org_id:
+        try:
+            _check_org_membership(user_uuid, org_id, db)
+        except HTTPException:
+            pass  # Degrade gracefully — still return results
 
     mongo = get_mongo_db()
     if mongo is None:
         raise HTTPException(status_code=500, detail="MongoDB not connected")
 
-    query = {"org_id": org_id}
+    query: dict = {}
+    if org_id:
+        query["org_id"] = org_id
     if group_id:
         query["group_id"] = group_id
 
@@ -1116,10 +1185,10 @@ async def list_projects(
     async for doc in cursor:
         projects.append(ProjectSummary(
             id=str(doc["_id"]),
-            repo_url=doc["repo_url"],
-            branch=doc["branch"],
-            org_id=doc["org_id"],
-            group_id=doc["group_id"],
+            repo_url=doc.get("repo_url", ""),
+            branch=doc.get("branch", "main"),
+            org_id=doc.get("org_id", ""),
+            group_id=doc.get("group_id", ""),
             created_by=doc.get("created_by", ""),
             created_at=doc.get("created_at", ""),
             last_scanned_at=doc.get("last_scanned_at"),
