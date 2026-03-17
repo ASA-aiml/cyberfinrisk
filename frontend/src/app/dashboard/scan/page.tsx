@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, CheckCircle, AlertTriangle, ArrowLeft, Download, Mail } from "lucide-react";
+import { Loader2, CheckCircle, AlertTriangle, ArrowLeft, Download, Mail, ExternalLink } from "lucide-react";
 import ScanTab from "@/components/ScanTab";
 import ManualTab from "@/components/ManualTab";
 import { api } from "@/lib/api";
@@ -41,7 +41,7 @@ export default function ScanPage() {
     const [loading, setLoading] = useState(false);
 
     const { user } = useAuth();
-    const { activeOrg } = useOrg();
+    const { activeOrg, activeGroup } = useOrg();
 
     // Mock company context for ManualTab shared context note or simple defaults
     const getCompanyInternal = (): CompanyContext => {
@@ -89,13 +89,19 @@ export default function ScanPage() {
         setError("");
         
         try {
-            await api.scanRepoStream(payload, (msg) => {
+            await api.scanRepoStream({
+                ...payload,
+                org_id: activeOrg.id,
+                group_id: activeGroup?.id || "",
+                user_uuid: user.uid,
+            }, (msg) => {
                 if (msg.status === "progress") {
                     if (msg.message) setScanMessage(msg.message);
                     if (msg.percent) setScanPercent(msg.percent);
                 } else if (msg.status === "done" && msg.data) {
                     setResults(msg.data);
                     setState("done");
+                    // We could store project_id here if we want to add a direct link button
                 } else if (msg.status === "error") {
                     throw new Error(msg.message || "Scan failed unexpectedly");
                 }
@@ -194,7 +200,7 @@ export default function ScanPage() {
                         {scanMessage}
                     </h3>
                     <p className="text-sm mb-6" style={{ color: "var(--muted-foreground)" }}>
-                        {activeTab === "scan" ? "This may take a minute depending on repo size" : "Applying financial models and processing AI requests"}
+                        {activeTab === "scan" ? "This may take several minutes for large repositories like Spree" : "Applying financial models and processing AI requests"}
                     </p>
                     <div className="w-full rounded-full h-1.5 mb-2 overflow-hidden" style={{ background: "var(--surface)" }}>
                         <div 
@@ -347,13 +353,22 @@ export default function ScanPage() {
                         />
                     </div>
 
-                    <button
-                        onClick={reset}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-zinc-800"
-                        style={{ border: "1px solid var(--border)", color: "var(--muted-foreground)" }}
-                    >
-                        <ArrowLeft size={16} /> Run Another Scan
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={reset}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-zinc-800"
+                            style={{ border: "1px solid var(--border)", color: "var(--muted-foreground)" }}
+                        >
+                            <ArrowLeft size={16} /> Run Another Scan
+                        </button>
+                        <a 
+                            href="/dashboard/projects"
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-all hover:bg-zinc-800"
+                            style={{ border: "1px solid var(--border)", color: "white" }}
+                        >
+                            <ExternalLink size={16} className="text-blue-400" /> View in Projects
+                        </a>
+                    </div>
                 </div>
             )}
         </div>

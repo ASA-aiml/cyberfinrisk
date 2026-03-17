@@ -67,20 +67,20 @@ export default function LandingPage() {
             className="w-7 h-7 rounded-md flex items-center justify-center font-black text-sm text-white"
             style={{ background: "var(--accent)" }}
           >
-            F
+            C
           </div>
-          <span className="font-bold text-base tracking-tight">FinRisk</span>
+          <span className="font-bold text-base tracking-tight">CyberFinRisk</span>
         </div>
         <div className="flex items-center gap-3">
           <Link
-            href="/dashboard"
+            href="/login"
             className="text-sm px-4 py-1.5 rounded-lg transition-colors font-medium"
             style={{ color: "var(--muted-foreground)" }}
           >
             Sign In
           </Link>
           <Link
-            href="/dashboard"
+            href="/login"
             className="text-sm px-4 py-1.5 rounded-lg font-semibold text-white transition-colors"
             style={{ background: "var(--accent)" }}
           >
@@ -112,20 +112,20 @@ export default function LandingPage() {
         </h1>
 
         <p className="text-lg md:text-xl max-w-2xl mb-10" style={{ color: "var(--muted-foreground)" }}>
-          FinRisk scans your GitHub repositories, detects vulnerabilities, and converts each one
+          CyberFinRisk scans your GitHub repositories, detects vulnerabilities, and converts each one
           into an expected dollar loss — ranked by financial priority for your board.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-3 items-center">
           <Link
-            href="/dashboard"
+            href="/login"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg font-semibold text-white text-base transition-all hover:opacity-90"
             style={{ background: "var(--accent)" }}
           >
             Get Started Free <ArrowRight size={16} />
           </Link>
           <Link
-            href="/dashboard"
+            href="/login"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg font-semibold text-base transition-all hover:opacity-80"
             style={{ border: "1px solid var(--border)", color: "var(--foreground)" }}
           >
@@ -145,7 +145,7 @@ export default function LandingPage() {
               <span key={c} className="w-2.5 h-2.5 rounded-full" style={{ background: c }} />
             ))}
             <span className="ml-3 text-xs font-mono" style={{ color: "var(--muted)" }}>
-              finrisk.app/dashboard/project/payment-api
+              cyberfinrisk.app/dashboard/project/payment-api
             </span>
           </div>
           {/* mock table */}
@@ -258,7 +258,7 @@ export default function LandingPage() {
             Free to start. No credit card required.
           </p>
           <Link
-            href="/dashboard"
+            href="/login"
             className="inline-flex items-center gap-2 px-8 py-3 rounded-lg font-semibold text-white transition-all hover:opacity-90"
             style={{ background: "var(--accent)" }}
           >
@@ -273,15 +273,15 @@ export default function LandingPage() {
         style={{ borderTop: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded flex items-center justify-center text-white font-black text-xs" style={{ background: "var(--accent)" }}>F</div>
-          <span className="text-sm font-bold">FinRisk</span>
+          <div className="w-5 h-5 rounded flex items-center justify-center text-white font-black text-xs" style={{ background: "var(--accent)" }}>C</div>
+          <span className="text-sm font-bold">CyberFinRisk</span>
         </div>
         <div className="flex gap-6 text-sm" style={{ color: "var(--muted-foreground)" }}>
           {["Documentation", "GitHub", "Privacy Policy", "Contact"].map(l => (
             <a key={l} href="#" className="hover:text-white transition-colors">{l}</a>
           ))}
         </div>
-        <p className="text-xs" style={{ color: "var(--muted)" }}>© 2026 FinRisk. All rights reserved.</p>
+        <p className="text-xs" style={{ color: "var(--muted)" }}>© 2026 CyberFinRisk. All rights reserved.</p>
       </footer>
     </div>
   );

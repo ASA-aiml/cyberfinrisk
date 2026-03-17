@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from fastapi.encoders import jsonable_encoder
 from contextlib import asynccontextmanager
 from logging_config import setup_logging
 
@@ -31,7 +32,7 @@ from engine.gemini_analyzer import init_gemini, analyze_vulnerability
 from engine.attack_chain import find_attack_chains
 from engine.business_brief import generate_business_brief, generate_executive_summary
 from prometheus_fastapi_instrumentator import Instrumentator
-from utils.email_utils import send_invite_email
+from utils.email_utils import send_invite_email, send_report_email
 
 from models.db import (
     Base, 
@@ -108,6 +109,10 @@ class ScanRequest(BaseModel):
     repo_url: str
     branch: str = "main"
     company: CompanyContext
+    org_id: str
+    group_id: str
+    user_uuid: str
+    project_id: Optional[str] = None
     gemini_api_key: Optional[str] = None
 
 class ReportPayload(BaseModel):
@@ -256,6 +261,7 @@ def run_risk_engine(
             line                   = f["line"],
             severity               = f.get("severity", "medium"),
             exposure               = exposure,
+            message                = f["message"],
             probability_of_exploit = baseline_p,
             gemini_analysis        = gemini_result,
             effective_probability  = effective_p,
@@ -284,6 +290,7 @@ def run_risk_engine(
     # ── Attack chain analysis (single Gemini call, already fast) ──────────────
     chains = []
     if gemini_api_key and len(ranked) >= 2:
+        from engine.attack_chain import find_attack_chains
         chains = find_attack_chains(ranked, company)
         for chain in chains:
             for r in ranked:
@@ -292,6 +299,7 @@ def run_risk_engine(
                         r.attack_chains = []
                     r.attack_chains.append(chain.chain_id)
 
+    logger.info(f"Risk engine summary: {len(ranked)} active risks, {filtered_count} false positives filtered out. Total loss: ${sum(r.expected_loss for r in ranked):,.0f}")
     logger.info(f"[perf] Total engine time: {time.time()-t0:.2f}s for {len(findings)} findings → {len(ranked)} results")
     return ranked, chains, filtered_count
 
@@ -355,6 +363,12 @@ def _load_demo_presets() -> list[PresetContext]:
 
         try:
             data = json.loads(json_str)
+            # Use JSON values for repo/branch if present (Quick JSON Import format)
+            if "repo_url" in data:
+                repo_url = data["repo_url"]
+            if "branch" in data:
+                branch = data["branch"]
+            
             company = CompanyContext(**data)
         except Exception:
             continue
@@ -406,6 +420,7 @@ async def scan_repo(req: ScanRequest):
             yield json.dumps({"status": "progress", "message": "Cloning repository...", "percent": 10}) + "\n"
             repo_path = clone_repo(req.repo_url, req.branch)
             logger.info(f"[perf] Clone done in {time.time()-t0:.1f}s")
+            yield json.dumps({"status": "progress", "message": "Cloning complete. Starting static analysis (may take a few minutes for large repos)...", "percent": 25}) + "\n"
 
             # Step 2: Static Analysis
             yield json.dumps({"status": "progress", "message": "Running Semgrep and Trivy scans...", "percent": 30}) + "\n"
@@ -425,15 +440,45 @@ async def scan_repo(req: ScanRequest):
             yield json.dumps({"status": "progress", "message": f"Analyzing {len(combined_parsed)} findings with AI models...", "percent": 60}) + "\n"
             results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
             
-            # Step 4: Finalizing
-            yield json.dumps({"status": "progress", "message": "Applying financial metrics and ranking risks...", "percent": 90}) + "\n"
-            os.makedirs("data", exist_ok=True)
-            with open("data/risk_results.json", "w") as f:
-                json.dump({"results": [r.dict() for r in results],
-                           "chains":  [c.dict() for c in chains]}, f, indent=2)
+            # Step 4: Finalizing & Persisting
+            yield json.dumps({"status": "progress", "message": "Saving results to project database...", "percent": 90}) + "\n"
             
             summary = generate_executive_summary(results, req.company, chains)
-            logger.info(f"[perf] Total /scan-repo: {time.time()-t0:.1f}s")
+            
+            # --- PERSISTENCE LOGIC START ---
+            mongo = get_mongo_db()
+            project_id = req.project_id
+            if mongo is not None:
+                now = datetime.now(timezone.utc).isoformat()
+                doc = {
+                    "repo_url": req.repo_url,
+                    "branch": req.branch,
+                    "company": req.company.dict(),
+                    "org_id": req.org_id,
+                    "group_id": req.group_id,
+                    "created_by": req.user_uuid,
+                    "last_scanned_at": now,
+                    "status": "completed",
+                    "scan_results": [r.dict() for r in results],
+                    "attack_chains": [c.dict() for c in chains],
+                    "executive_summary": summary,
+                    "total_expected_loss": sum(r.expected_loss for r in results),
+                    "total_fix_cost": sum(r.fix_cost_usd for r in results),
+                    "vulnerability_count": len(results),
+                    "filtered_count": filtered,
+                    "gemini_enabled": bool(req.gemini_api_key),
+                }
+                
+                if project_id:
+                    from bson import ObjectId
+                    await mongo["projects"].replace_one({"_id": ObjectId(project_id)}, doc, upsert=True)
+                    logger.info(f"Scan updated for project: {project_id}")
+                else:
+                    doc["created_at"] = now
+                    res = await mongo["projects"].insert_one(doc)
+                    project_id = str(res.inserted_id)
+                    logger.info(f"Scan persisted to new project: {project_id}")
+            # --- PERSISTENCE LOGIC END ---
 
             final_data = AnalysisResponse(
                 results=results, 
@@ -446,11 +491,37 @@ async def scan_repo(req: ScanRequest):
                 gemini_enabled=bool(req.gemini_api_key)
             )
             
-            yield json.dumps({"status": "done", "data": final_data.dict()}) + "\n"
+            yield json.dumps(jsonable_encoder({"status": "done", "data": final_data, "project_id": project_id})) + "\n"
+
+            # --- EMAIL NOTIFICATION START ---
+            try:
+                # Fetch user email from PG
+                db = next(get_pg_db())
+                user_record = db.query(User).filter(User.uuid == req.user_uuid).first()
+                if user_record and user_record.email:
+                    logger.info(f"Sending scan report email to {user_record.email}")
+                    # Prepare top risks (first 5)
+                    top_risks = [r.dict() for r in results[:5]]
+                    # We run this in the background to not block the stream (though it's at the end)
+                    await send_report_email(
+                        to_email=user_record.email,
+                        company_name=req.company.company_name,
+                        executive_summary=summary,
+                        total_expected_loss=sum(r.expected_loss for r in results),
+                        total_fix_cost=sum(r.fix_cost_usd for r in results),
+                        vulnerability_count=len(results),
+                        top_risks=top_risks,
+                        attack_chains=[c.dict() for c in chains]
+                    )
+                else:
+                    logger.warning(f"Could not find email for user uuid: {req.user_uuid}")
+            except Exception as email_err:
+                logger.error(f"Failed to send scan report email: {email_err}")
+            # --- EMAIL NOTIFICATION END ---
 
         except Exception as e:
             logger.exception(f"Scan failed: {e}")
-            yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+            yield json.dumps(jsonable_encoder({"status": "error", "message": str(e)})) + "\n"
         finally:
             if repo_path and os.path.exists(repo_path):
                 _rmtree_windows_safe(repo_path)
@@ -743,6 +814,25 @@ async def create_organization(req: OrganizationCreate, db: Session = Depends(get
         role="admin"
     )
     db.add(membership)
+
+    # Create default "Personal" group
+    personal_group = Group(
+        name="Personal",
+        description="Default team for solo projects",
+        org_id=new_org.id,
+        creator_uuid=req.creator_uuid
+    )
+    db.add(personal_group)
+    db.flush()
+
+    # Add creator as admin of the group
+    group_membership = GroupMember(
+        group_id=personal_group.id,
+        user_uuid=req.creator_uuid,
+        role="admin"
+    )
+    db.add(group_membership)
+
     db.commit()
     db.refresh(new_org)
     

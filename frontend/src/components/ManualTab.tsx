@@ -39,7 +39,6 @@ const PLACEHOLDER = `[
 ]`;
 
 export default function ManualTab({
-    onSwitchToScan,
     onAnalyze,
     error,
     loading,
@@ -90,13 +89,28 @@ export default function ManualTab({
                     <p className="text-[13px] mb-4" style={{ color: "var(--muted)" }}>
                         Same as the Scan tab. Fill in the fields there — they are shared.
                     </p>
-                    <button
-                        onClick={onSwitchToScan}
-                        className="text-[13px] transition-colors"
-                        style={{ color: "var(--accent)" }}
-                    >
-                        ← Fill in company context in the Scan tab
-                    </button>
+                    <div className="mb-4">
+                        <label className="block text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: "var(--muted)" }}>
+                            Quick JSON Import
+                        </label>
+                        <textarea
+                            placeholder='Paste Company JSON...'
+                            className="w-full rounded-lg px-3.5 py-2.5 text-sm mb-3 outline-none resize-y"
+                            style={{ 
+                                background: "var(--bg)", 
+                                border: "1px solid var(--border)", 
+                                color: "var(--text)", 
+                                fontFamily: "var(--font-mono)", 
+                                fontSize: "12px", 
+                                minHeight: "80px" 
+                            }}
+                            onFocus={e => (e.target.style.borderColor = "var(--accent)")}
+                            onBlur={e => (e.target.style.borderColor = "var(--border)")}
+                        />
+                         <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+                            For a better experience and to auto-populate the full profile, use the <strong>Quick JSON Import</strong> in the <strong>Repository Scan</strong> tab.
+                        </p>
+                    </div>
                 </div>
             </div>
 

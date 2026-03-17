@@ -1,7 +1,15 @@
-import subprocess, json, tempfile, shutil, os, stat
-from typing import List, Dict
-import git
+import logging
+import os
 import re
+import subprocess
+import json
+import shutil
+import stat
+import tempfile
+
+from typing import List, Dict
+
+logger = logging.getLogger(__name__)
 
 def _rmtree_windows_safe(path: str) -> None:
     """
@@ -19,7 +27,7 @@ def _rmtree_windows_safe(path: str) -> None:
     try:
         shutil.rmtree(path, onerror=_on_error)
     except Exception as e:
-        print(f"[scanner] Warning: could not fully clean up temp dir {path}: {e}")
+        logger.warning(f"Could not fully clean up temp dir {path}: {e}")
 
 
 def sanitize_repo_url(url: str) -> str:
@@ -48,18 +56,19 @@ def clone_repo(repo_url: str, branch: str = "main") -> str:
 
     def _try_clone(b=None):
         """Clone with optional branch. b=None uses the repo's default branch."""
-        kwargs = {"depth": 1}
+        cmd = ["git", "clone", "--depth", "1", "--single-branch"]
         if b:
-            kwargs["branch"] = b
-        git.Repo.clone_from(repo_url, tmp, **kwargs)
+            cmd += ["--branch", b]
+        cmd += [repo_url, tmp]
+        
+        # Use subprocess for explicit timeout control (5 minutes)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
 
     branches_to_try = [branch]
-    # Add the opposite of what the user specified as a second try
     if branch == "main":
         branches_to_try.append("master")
     elif branch == "master":
         branches_to_try.append("main")
-    # Final fallback: let git use the repo's own default branch
     branches_to_try.append(None)
 
     last_error = None
@@ -67,11 +76,14 @@ def clone_repo(repo_url: str, branch: str = "main") -> str:
         try:
             _try_clone(b)
             return tmp  # success
-        except git.exc.GitCommandError as e:
-            last_error = e
-            # Only retry on branch-not-found errors; hard-fail on bad URL etc.
-            err_str = str(e).lower()
-            if "not found" not in err_str and "exit code(128)" not in err_str:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            last_error = str(e.stderr) if hasattr(e, 'stderr') else str(e)
+            # If timeout, don't keep trying other branches
+            if isinstance(e, subprocess.TimeoutExpired):
+                break
+            # Only retry on branch-not-found errors
+            err_str = last_error.lower()
+            if "not found" not in err_str and "could not find" not in err_str:
                 break
 
     _rmtree_windows_safe(tmp)
@@ -101,15 +113,19 @@ def run_semgrep(repo_path: str) -> List[Dict]:
             "--timeout-threshold", "3",     # Skip rule after 3 timeouts
             repo_path
         ],
-        capture_output=True, text=True, timeout=300
+        capture_output=True, text=True, timeout=600
     )
     elapsed = time.time() - t0
+    if result.returncode != 0:
+        logger.error(f"Semgrep failed (code {result.returncode}) after {elapsed:.1f}s. Stderr: {result.stderr[:500]}")
+        return []
+
     try:
         findings = json.loads(result.stdout).get("results", [])
-        print(f"[perf] Semgrep: {len(findings)} findings in {elapsed:.1f}s")
+        logger.info(f"Semgrep: {len(findings)} findings in {elapsed:.1f}s")
         return findings
-    except:
-        print(f"[perf] Semgrep: parse failed after {elapsed:.1f}s — stdout: {result.stdout[:200]}")
+    except Exception as e:
+        logger.error(f"Semgrep: JSON parse failed after {elapsed:.1f}s — stdout: {result.stdout[:200]} — error: {e}")
         return []
 
 def read_code_context(file_path: str, line: int, context_lines: int = 40) -> str:
@@ -197,13 +213,22 @@ def run_trivy(repo_path: str) -> Dict:
     try:
         result = subprocess.run(
             [trivy_bin, "fs", "--format", "json", "--quiet", "--no-progress", repo_path],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, timeout=600
         )
-        if result.returncode != 0 and not result.stdout:
+        if result.returncode != 0:
+            logger.error(f"Trivy failed (code {result.returncode}). Stderr: {result.stderr[:500]}")
             return {}
+            
+        if not result.stdout:
+            logger.warning("Trivy returned empty output")
+            return {}
+            
         return json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        logger.error("Trivy scan timed out (600s)")
+        return {}
     except Exception as e:
-        print(f"Trivy scan failed: {e}")
+        logger.error(f"Trivy scan failed: {e}")
         return {}
 
 

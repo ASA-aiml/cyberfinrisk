@@ -52,6 +52,7 @@ FinRisk is a powerful security tool designed to translate technical vulnerabilit
 3. **Install Dependencies**:
    ```bash
    pip install -r requirements.txt
+   curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b .
    ```
 
 4. **Environment Configuration**:

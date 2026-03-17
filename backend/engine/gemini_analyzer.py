@@ -69,18 +69,28 @@ CODE CONTEXT (lines around the vulnerability):
 {code_context if code_context else "Code context not available — reason from file name and bug type."}
 ```
 
-Analyze this vulnerability. Respond ONLY with raw JSON — NO markdown fences, NO code blocks, NO extra text.
+Analyze this vulnerability based SOLELY on the provided scanner message and code context.
+
+STRICT RULES:
+1. Only report vulnerabilities that appear in the scanner output or are directly verifiable from the code context.
+2. Do NOT invent explanations, analogies, or metaphors. No "unlabelled containers", "filing cabinets", or "house keys".
+3. Use technical, professional language only.
+4. If the code context or scanner message does not actually show a vulnerability (e.g., obvious false positive or dead code), set `is_exploitable` to false and `adjusted_probability` accordingly.
+5. The `recommended_fix` MUST be a specific code change or a precise version upgrade command (e.g., `npm install package@version`). Do NOT provide generic advice.
+6. The `business_context` must describe what the code does in technical terms, NOT in metaphors.
+
+Analyze and respond ONLY with raw JSON.
 Output exactly this structure:
 {{
   "is_exploitable": true or false,
   "exploitability_confidence": "high", "medium", or "low",
-  "exploitability_reasoning": "2-3 sentences explaining WHY this is or isn't exploitable based on the actual code, historical breach rates for this bug, and system context.",
-  "business_context": "1-2 sentences describing what this code actually does and what business function it serves.",
+  "exploitability_reasoning": "2-3 sentences explaining the TECHNICAL reason for this finding's validity.",
+  "business_context": "Technical description of the affected code's function.",
   "authentication_required": "public_unauthenticated", "authenticated_user", "admin_only", or "internal_service",
   "data_scope": "full_database", "single_user_record", "system_files", or "none",
   "adjusted_probability": <float between 0.01 and 0.95>,
   "false_positive_likelihood": "high", "medium", or "low",
-  "recommended_fix": "Specific fix — include actual code if possible, or precise instructions",
+  "recommended_fix": "Specific technical fix.",
   "fix_complexity": "simple", "moderate", or "complex"
 }}
 
@@ -138,5 +148,9 @@ Rules:
             print(f"Gemini analysis failed for {file}:{line} after {MAX_RETRIES+1} attempts — {e}")
             return None
         except Exception as e:
-            print(f"Gemini analysis failed for {file}:{line} — {e}")
+            # Handle quota limits (429) or other API errors gracefully
+            if "429" in str(e) or "ResourceExhausted" in str(e):
+                print(f"Gemini API quota reached for {file}:{line} — falling back to standard analysis.")
+            else:
+                print(f"Gemini analysis failed for {file}:{line} — {e}")
             return None

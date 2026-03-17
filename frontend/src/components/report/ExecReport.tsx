@@ -204,9 +204,40 @@ export function ExecReport({ results, companyName, repoUrl, scanDate }: ExecRepo
                 </div>
             )}
 
+            {/* ── Executive Summary ── */}
+            {results.executive_summary && (
+                <div style={{ padding: "28px 40px 0" }}>
+                    <SectionHeader icon="📄" title="Executive Summary" />
+                    <div style={{
+                        marginTop: 14, padding: "24px", borderRadius: 12,
+                        background: "#1a1f2e", border: "1px solid #1e2230",
+                        fontSize: 14, color: "#e2e8f0", lineHeight: 1.6,
+                    }}>
+                        {results.executive_summary.split("\n").map((line, i) => {
+                            if (line.startsWith("# ")) return <h1 key={i} style={{ margin: "20px 0 10px", fontSize: 20, color: "#fff", fontWeight: 800 }}>{line.replace("# ", "")}</h1>;
+                            if (line.startsWith("## ")) return <h2 key={i} style={{ margin: "18px 0 8px", fontSize: 16, color: "#f1f5f9", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>{line.replace("## ", "")}</h2>;
+                            if (line.startsWith("- ")) return <li key={i} style={{ marginLeft: 20, marginBottom: 6, color: "#94a3b8" }}>{line.replace("- ", "")}</li>;
+                            if (line.trim() === "") return <div key={i} style={{ height: 8 }} />;
+                            
+                            // Simple bolding replace
+                            const parts = line.split(/(\*\*.*?\*\*)/);
+                            return (
+                                <p key={i} style={{ margin: "8px 0", color: "#94a3b8" }}>
+                                    {parts.map((part, pi) => 
+                                        part.startsWith("**") && part.endsWith("**") 
+                                            ? <strong key={pi} style={{ color: "#fff", fontWeight: 700 }}>{part.slice(2, -2)}</strong> 
+                                            : part
+                                    )}
+                                </p>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {/* ── What If Nothing Done ── */}
             <div style={{ padding: "28px 40px 0" }}>
-                <SectionHeader icon="⏳" title="What Happens If We Do Nothing" />
+                <SectionHeader icon="⏳" title="Risk Context" />
                 <div style={{
                     marginTop: 12, padding: "16px 20px", borderRadius: 10,
                     background: "rgba(230,57,70,0.06)", border: "1px solid rgba(230,57,70,0.15)",

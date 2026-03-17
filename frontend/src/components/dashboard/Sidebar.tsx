@@ -279,7 +279,7 @@ export default function Sidebar() {
                         <SectionLabel>Group</SectionLabel>
                         <div className="relative">
                             <SwitcherItem
-                                name={activeGroup?.name ?? "No Groups"}
+                                name={activeGroup?.name ?? "Select Group..."}
                                 onClick={() => setActiveDropdown(activeDropdown === "group" ? null : "group")}
                                 isOpen={activeDropdown === "group"}
                             />
