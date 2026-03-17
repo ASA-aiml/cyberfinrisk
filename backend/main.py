@@ -56,7 +56,7 @@ from models.org_schemas import (
     MemberResponse,
     NotificationResponse
 )
-from models.project_schemas import ProjectCreate, ProjectSummary, ProjectDetail
+from models.project_schemas import ProjectCreate, ProjectSave, ProjectSummary, ProjectDetail
 
 # Manage Startup and Shutdown events
 @asynccontextmanager
@@ -444,36 +444,50 @@ async def analyze_manual(req: ManualScanRequest):
     )
 
 
-@app.post("/scan-repo", response_model=AnalysisResponse)
+@app.post("/scan-repo")
 async def scan_repo(req: ScanRequest):
+    from fastapi.responses import StreamingResponse
     import time
     from concurrent.futures import ThreadPoolExecutor
-    repo_path = None
-    try:
-        t0 = time.time()
-        repo_path = clone_repo(req.repo_url, req.branch)
-        logger.info(f"[perf] Clone done in {time.time()-t0:.1f}s")
 
-        # Run Semgrep + Trivy concurrently (biggest speed win)
-        t_scan = time.time()
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            f_semgrep = ex.submit(run_semgrep, repo_path)
-            f_trivy   = ex.submit(run_trivy, repo_path)
-            semgrep_raw = f_semgrep.result()
-            trivy_raw   = f_trivy.result()
+    async def scan_generator():
+        repo_path = None
+        try:
+            t0 = time.time()
+            
+            # Step 1: Clone
+            yield json.dumps({"status": "progress", "message": "Cloning repository...", "percent": 10}) + "\n"
+            repo_path = clone_repo(req.repo_url, req.branch)
+            logger.info(f"[perf] Clone done in {time.time()-t0:.1f}s")
+
+            # Step 2: Static Analysis
+            yield json.dumps({"status": "progress", "message": "Running Semgrep and Trivy scans...", "percent": 30}) + "\n"
+            t_scan = time.time()
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_semgrep = ex.submit(run_semgrep, repo_path)
+                f_trivy   = ex.submit(run_trivy, repo_path)
+                semgrep_raw = f_semgrep.result()
+                trivy_raw   = f_trivy.result()
 
         semgrep_parsed  = parse_semgrep_findings(semgrep_raw, req.company.deployment_exposure, repo_path)
         trivy_parsed    = parse_trivy_findings(trivy_raw, req.company.deployment_exposure, repo_path)
         combined_parsed = semgrep_parsed + trivy_parsed
         logger.info(f"[perf] Scanners done in {time.time()-t_scan:.1f}s — {len(combined_parsed)} findings")
 
+        # Step 3: Risk Engine
+        yield json.dumps({"status": "progress", "message": f"Analyzing {len(combined_parsed)} findings with AI models...", "percent": 60}) + "\n"
         results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
+        
+        # Step 4: Finalizing
+        yield json.dumps({"status": "progress", "message": "Applying financial metrics and ranking risks...", "percent": 90}) + "\n"
         os.makedirs("data", exist_ok=True)
         with open("data/risk_results.json", "w") as f:
             json.dump({"results": [r.dict() for r in results],
                        "chains":  [c.dict() for c in chains]}, f, indent=2)
+        
         summary = generate_executive_summary(results, req.company, chains)
         logger.info(f"[perf] Total /scan-repo: {time.time()-t0:.1f}s")
+
         # Save to projects collection so it appears in the Projects page
         await _save_scan_to_projects(
             repo_url=req.repo_url,
@@ -485,19 +499,28 @@ async def scan_repo(req: ScanRequest):
             filtered=filtered,
             gemini_enabled=bool(req.gemini_api_key),
         )
-        return AnalysisResponse(
-            results=results, attack_chains=chains, executive_summary=summary,
+
+        final_data = AnalysisResponse(
+            results=results, 
+            attack_chains=chains, 
+            executive_summary=summary,
             total_expected_loss=sum(r.expected_loss for r in results),
             total_fix_cost=sum(r.fix_cost_usd for r in results),
             vulnerability_count=len(results),
             filtered_count=filtered,
             gemini_enabled=bool(req.gemini_api_key)
         )
+        
+        yield json.dumps({"status": "done", "data": final_data.dict()}) + "\n"
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Scan failed: {e}")
+        yield json.dumps({"status": "error", "message": str(e)}) + "\n"
     finally:
         if repo_path and os.path.exists(repo_path):
             _rmtree_windows_safe(repo_path)
+
+    return StreamingResponse(scan_generator(), media_type="application/x-ndjson")
 
 
 
@@ -1122,6 +1145,67 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
     }
 
     # 4. Insert into MongoDB
+    result = await mongo["projects"].insert_one(doc)
+    doc["id"] = str(result.inserted_id)
+
+    return ProjectDetail(
+        id=doc["id"],
+        repo_url=doc["repo_url"],
+        branch=doc["branch"],
+        org_id=doc["org_id"],
+        group_id=doc["group_id"],
+        created_by=doc["created_by"],
+        created_at=doc["created_at"],
+        last_scanned_at=doc["last_scanned_at"],
+        status=doc["status"],
+        vulnerability_count=doc["vulnerability_count"],
+        total_expected_loss=doc["total_expected_loss"],
+        total_fix_cost=doc["total_fix_cost"],
+        gemini_enabled=doc["gemini_enabled"],
+        company=doc["company"],
+        scan_results=doc["scan_results"],
+        attack_chains=doc["attack_chains"],
+        executive_summary=doc["executive_summary"],
+        filtered_count=doc["filtered_count"],
+    )
+
+
+@app.post("/api/projects/save", response_model=ProjectDetail)
+async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
+    """Save pre-computed scan results as a project to MongoDB.
+    
+    Unlike POST /api/projects which re-runs the scan, this endpoint
+    accepts already-computed results (from /scan-repo streaming) and
+    just persists them with the correct org_id + group_id.
+    """
+    if req.org_id:
+        _check_org_membership(req.created_by, req.org_id, db)
+
+    mongo = get_mongo_db()
+    if mongo is None:
+        raise HTTPException(status_code=500, detail="MongoDB not connected")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "repo_url": req.repo_url,
+        "branch": req.branch,
+        "company": req.company,
+        "org_id": req.org_id,
+        "group_id": req.group_id,
+        "created_by": req.created_by,
+        "created_at": now,
+        "last_scanned_at": now,
+        "status": "completed",
+        "scan_results": req.scan_results,
+        "attack_chains": req.attack_chains,
+        "executive_summary": req.executive_summary,
+        "total_expected_loss": req.total_expected_loss,
+        "total_fix_cost": req.total_fix_cost,
+        "vulnerability_count": req.vulnerability_count,
+        "filtered_count": req.filtered_count,
+        "gemini_enabled": req.gemini_enabled,
+    }
+
     result = await mongo["projects"].insert_one(doc)
     doc["id"] = str(result.inserted_id)
 

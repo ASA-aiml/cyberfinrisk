@@ -52,10 +52,56 @@ export const api = {
         branch: string;
         gemini_api_key: string | null;
     }): Promise<ScanResults> {
+        // Fallback or legacy wrapper if needed, but we'll use scanRepoStream for live updates
         return fetchAPI("/scan-repo", {
             method: "POST",
             body: JSON.stringify(payload),
         });
+    },
+
+    async scanRepoStream(
+        payload: {
+            company: CompanyContext;
+            repo_url: string;
+            branch: string;
+            gemini_api_key: string | null;
+        },
+        onMessage: (msg: { status: string; message?: string; percent?: number; data?: ScanResults }) => void
+    ): Promise<void> {
+        const response = await fetch(`${API_URL}/scan-repo`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: "Scan failed" }));
+            throw new Error(err.detail || "Scan request failed");
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) throw new Error("No response body");
+
+        let buffer = "";
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const msg = JSON.parse(line);
+                    onMessage(msg);
+                } catch (e) {
+                    console.error("Failed to parse NDJSON line:", e);
+                }
+            }
+        }
     },
 
     async createOrganization(payload: {
@@ -166,6 +212,28 @@ export const api = {
         gemini_api_key: string | null;
     }): Promise<ProjectDetail> {
         return fetchAPI("/api/projects", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    },
+
+    async saveProject(payload: {
+        repo_url: string;
+        branch: string;
+        company: any;
+        org_id: string;
+        group_id: string;
+        created_by: string;
+        scan_results: any[];
+        attack_chains: any[];
+        executive_summary: string;
+        total_expected_loss: number;
+        total_fix_cost: number;
+        vulnerability_count: number;
+        filtered_count: number;
+        gemini_enabled: boolean;
+    }): Promise<ProjectDetail> {
+        return fetchAPI("/api/projects/save", {
             method: "POST",
             body: JSON.stringify(payload),
         });

@@ -118,7 +118,7 @@ function EmptyDashboard() {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-    const { activeOrg } = useOrg();
+    const { activeOrg, loading: orgLoading } = useOrg();
     const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -145,6 +145,9 @@ export default function DashboardPage() {
     const m = metrics;
     const sev = m?.severity_breakdown;
 
+    // We consider it "initially loading" if either metrics or the organization context is loading
+    const isInitiallyLoading = loading || (orgLoading && !activeOrg);
+
     return (
         <div className="flex flex-col h-full">
             <TopBar
@@ -161,20 +164,29 @@ export default function DashboardPage() {
             <div className="px-6 md:px-10 py-8 max-w-7xl mx-auto w-full">
                 {/* Header */}
                 <div className="mb-8">
-                    <h1 className="text-2xl font-extrabold tracking-tight mb-1">Dashboard</h1>
-                    <p className="text-sm" style={{ color: "var(--muted-foreground)" }}>
-                        Security risk overview for {activeOrg?.name ?? "your organization"}
-                    </p>
+                    {isInitiallyLoading ? (
+                        <div className="animate-pulse">
+                            <div className="h-8 w-48 bg-white/10 rounded mb-2" />
+                            <div className="h-4 w-64 bg-white/5 rounded" />
+                        </div>
+                    ) : (
+                        <>
+                            <h1 className="text-2xl font-extrabold tracking-tight mb-1">Dashboard</h1>
+                            <p className="text-sm" style={{ color: "var(--muted-foreground)" }}>
+                                Security risk overview for {activeOrg?.name ?? "your organization"}
+                            </p>
+                        </>
+                    )}
                 </div>
 
                 {/* Loading state */}
-                {loading && (
+                {isInitiallyLoading && (
                     <div>
                         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
                             <SkeletonCard /><SkeletonCard /><SkeletonCard /><SkeletonCard />
                         </div>
                         <div className="flex items-center justify-center py-12 gap-2" style={{ color: "var(--muted-foreground)" }}>
-                            <Loader2 size={16} className="animate-spin" /> Loading metrics…
+                            <Loader2 size={16} className="animate-spin" /> Loading dashboard…
                         </div>
                     </div>
                 )}

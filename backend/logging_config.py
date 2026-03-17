@@ -30,7 +30,7 @@ def setup_logging():
     # Use JSON in production/container, simple formatting in development
     # You can set an environment variable to toggle this
     import os
-    if os.getenv("LOG_FORMAT", "JSON").upper() == "JSON":
+    if os.getenv("LOG_FORMAT", "SIMPLE").upper() == "JSON":
         handler.setFormatter(JsonFormatter())
     else:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

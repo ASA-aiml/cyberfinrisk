@@ -22,14 +22,14 @@ import { useOrg } from "@/context/OrgContext";
 
 const ORG_NAV_ITEMS = [
     { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-    { href: "/dashboard/projects", icon: FolderOpen, label: "Projects" },
     { href: "/dashboard/members", icon: Users, label: "Members" },
     { href: "/dashboard/notifications", icon: Bell, label: "Notifications" },
     { href: "/dashboard/settings", icon: Settings, label: "Settings" },
 ];
 
 const GROUP_NAV_ITEMS = [
-    { href: "/dashboard/scan", icon: Scan, label: "Integrations" },
+    { href: "/dashboard/scan", icon: Scan, label: "Scan" },
+    { href: "/dashboard/projects", icon: FolderOpen, label: "Projects" },
     { href: "/dashboard/settings/group", icon: Settings, label: "Group Settings" },
 ];
 
@@ -97,6 +97,23 @@ function NavItem({
             <Icon size={14} className="flex-shrink-0" />
             {label}
         </Link>
+    );
+}
+
+/** Loading skeleton for switcher items */
+function SkeletonSwitcher() {
+    return (
+        <div className="px-3 py-1.5 animate-pulse">
+            <div className="flex items-center gap-2.5">
+                <div className="w-[18px] h-[18px] rounded-full bg-white/10" />
+                <div className="h-3 w-24 bg-white/10 rounded" />
+            </div>
+            <div className="mt-4 space-y-2 ml-4">
+                <div className="h-2 w-20 bg-white/5 rounded" />
+                <div className="h-2 w-16 bg-white/5 rounded" />
+                <div className="h-2 w-24 bg-white/5 rounded" />
+            </div>
+        </div>
     );
 }
 
@@ -196,17 +213,26 @@ export default function Sidebar() {
                 >
                     S
                 </div>
-                <span className="font-bold text-sm tracking-tight text-white">afiq</span>
+                <span className="font-bold text-sm tracking-tight text-white">CyberFinRisk</span>
             </div>
 
             {/* ── Switcher & Nav Hierarchy ── */}
             <div className="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-6">
 
                 {loading && (
-                    <div className="px-3 py-4 text-xs text-zinc-500 animate-pulse">Loading...</div>
+                    <div className="flex flex-col gap-6">
+                        <div className="flex flex-col gap-1">
+                            <SectionLabel>Organization</SectionLabel>
+                            <SkeletonSwitcher />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            <SectionLabel>Group</SectionLabel>
+                            <SkeletonSwitcher />
+                        </div>
+                    </div>
                 )}
 
-                {!loading && !activeOrg && (
+                {!loading && !activeOrg && user && (
                     <div className="px-3 py-4 text-xs text-zinc-500">
                         No organizations yet.
                         <button onClick={() => router.push("/dashboard/org/new")} className="block mt-1 text-accent underline">Create one →</button>

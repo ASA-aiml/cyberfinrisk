@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, CheckCircle, AlertTriangle, ArrowLeft, Download, Mail } from "lucide-react";
 import ScanTab from "@/components/ScanTab";
 import ManualTab from "@/components/ManualTab";
@@ -13,6 +13,14 @@ import { useOrg } from "@/context/OrgContext";
 import { ExecReport } from "@/components/report/ExecReport";
 
 type ScanState = "idle" | "scanning" | "done" | "error";
+type SaveStatus = "idle" | "saving" | "saved" | "failed";
+
+interface ScanPayload {
+    company: CompanyContext;
+    repo_url: string;
+    branch: string;
+    gemini_api_key: string | null;
+}
 
 const SEV_COLORS: Record<string, string> = {
     critical: "#e63946",
@@ -41,7 +49,10 @@ export default function ScanPage() {
     const [loading, setLoading] = useState(false);
 
     const { user } = useAuth();
-    const { activeOrg } = useOrg();
+    const { activeOrg, activeGroup } = useOrg();
+
+    const [lastScanPayload, setLastScanPayload] = useState<ScanPayload | null>(null);
+    const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
 
     // Mock company context for ManualTab shared context note or simple defaults
     const getCompanyInternal = (): CompanyContext => {
@@ -68,6 +79,9 @@ export default function ScanPage() {
         };
     };
 
+    const [scanMessage, setScanMessage] = useState("");
+    const [scanPercent, setScanPercent] = useState(0);
+
     async function handleScan(payload: {
         company: CompanyContext;
         repo_url: string;
@@ -81,21 +95,24 @@ export default function ScanPage() {
 
         setLoading(true);
         setState("scanning");
+        setScanMessage("Cloning repository...");
+        setScanPercent(10);
         setError("");
+        setSaveStatus("idle");
+        setLastScanPayload(payload);
+        
         try {
-            const data = await api.scanRepo(payload);
-
-            setResults({
-                results: data.results,
-                attack_chains: data.attack_chains,
-                executive_summary: data.executive_summary,
-                total_expected_loss: data.total_expected_loss,
-                total_fix_cost: data.total_fix_cost,
-                vulnerability_count: data.vulnerability_count,
-                filtered_count: data.filtered_count,
-                gemini_enabled: data.gemini_enabled,
+            await api.scanRepoStream(payload, (msg) => {
+                if (msg.status === "progress") {
+                    if (msg.message) setScanMessage(msg.message);
+                    if (msg.percent) setScanPercent(msg.percent);
+                } else if (msg.status === "done" && msg.data) {
+                    setResults(msg.data);
+                    setState("done");
+                } else if (msg.status === "error") {
+                    throw new Error(msg.message || "Scan failed unexpectedly");
+                }
             });
-            setState("done");
         } catch (err: any) {
             setError(err.message || "Failed to scan repository");
             setState("error");
@@ -104,6 +121,40 @@ export default function ScanPage() {
         }
     }
 
+    // Auto-save project when scan results are available
+    useEffect(() => {
+        if (state !== "done" || !results || !lastScanPayload || !user || !activeOrg) return;
+        if (saveStatus !== "idle") return; // prevent re-saving
+
+        const saveProject = async () => {
+            setSaveStatus("saving");
+            try {
+                await api.saveProject({
+                    repo_url: lastScanPayload.repo_url,
+                    branch: lastScanPayload.branch,
+                    company: lastScanPayload.company,
+                    org_id: activeOrg.id,
+                    group_id: activeGroup?.id || "",
+                    created_by: user.uid,
+                    scan_results: results.results,
+                    attack_chains: results.attack_chains,
+                    executive_summary: results.executive_summary,
+                    total_expected_loss: results.total_expected_loss,
+                    total_fix_cost: results.total_fix_cost,
+                    vulnerability_count: results.vulnerability_count,
+                    filtered_count: results.filtered_count,
+                    gemini_enabled: results.gemini_enabled,
+                });
+                setSaveStatus("saved");
+            } catch (err) {
+                console.error("Failed to save project", err);
+                setSaveStatus("failed");
+            }
+        };
+
+        saveProject();
+    }, [state, results]);
+
     async function handleAnalyze(payload: {
         vulnerabilities: VulnInput[];
         company: CompanyContext;
@@ -111,6 +162,8 @@ export default function ScanPage() {
     }) {
         setLoading(true);
         setState("scanning");
+        setScanMessage("Analyzing vulnerabilities...");
+        setScanPercent(30);
         setError("");
         try {
             const data = await api.analyzeManual(payload);
@@ -185,14 +238,20 @@ export default function ScanPage() {
                 >
                     <Loader2 size={40} className="mx-auto mb-4 animate-spin" style={{ color: "var(--accent)" }} />
                     <h3 className="font-bold text-lg mb-1">
-                        {activeTab === "scan" ? "Scanning repository..." : "Analyzing vulnerabilities..."}
+                        {scanMessage}
                     </h3>
                     <p className="text-sm mb-6" style={{ color: "var(--muted-foreground)" }}>
                         {activeTab === "scan" ? "This may take a minute depending on repo size" : "Applying financial models and processing AI requests"}
                     </p>
                     <div className="w-full rounded-full h-1.5 mb-2 overflow-hidden" style={{ background: "var(--surface)" }}>
-                        <div className="h-full bg-[var(--accent)] animate-progress" style={{ width: "30%" }} />
+                        <div 
+                            className="h-full bg-[var(--accent)] transition-all duration-500 ease-out" 
+                            style={{ width: `${scanPercent}%` }} 
+                        />
                     </div>
+                    <p className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                        {scanPercent}% Complete
+                    </p>
                 </div>
             )}
 
@@ -228,6 +287,9 @@ export default function ScanPage() {
                             </p>
                             <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                                 Found {results.results.length} vulnerabilities · Adjusted by AI: {results.gemini_enabled ? "Yes" : "No"}
+                                {saveStatus === "saving" && " · Saving to projects..."}
+                                {saveStatus === "saved" && " · ✓ Saved to projects"}
+                                {saveStatus === "failed" && " · ⚠ Failed to save"}
                             </p>
                         </div>
                     </div>

@@ -139,3 +139,20 @@
 * **Phase 3–4** = Differentiators. Makes you **industry-leading, predictive, multi-stack, and predictive**.
 
 
+
+\section{Recommendations for Future Work} \label{sec:future_work}
+
+To transition FinRisk from a prototype to a robust, enterprise-grade platform, the following areas should be prioritized:
+
+\begin{enumerate}
+    \item \textbf{Input Validation and Defaults:} Implement comprehensive validation mechanisms and default values for incomplete or inconsistent organizational data to ensure reliability of financial risk estimates.
+    \item \textbf{LLM Remediation Safeguards:} Introduce rule-based filtering and validation of AI-generated remediation guidance to prevent unsafe or irrelevant code suggestions.
+    \item \textbf{Performance Optimization:} Optimize backend pipelines with parallelization, caching, and resource management to handle large-scale repositories and concurrent analyses efficiently.
+    \item \textbf{Enhanced Attack Chain Modeling:} Expand attack chain detection to include previously unseen sequences using AI-assisted inference, improving accuracy of aggregated financial risk estimates.
+    \item \textbf{Explicit Documentation of Assumptions and Uncertainties:} Clearly communicate limitations, probabilistic nature of AI outputs, and sensitivity of risk estimates to end-users for informed decision-making.
+    \item \textbf{Expanded Language and Framework Support:} Extend vulnerability scanning and normalization to additional programming languages, frameworks, and deployment scenarios to increase platform applicability.
+    \item \textbf{Integration with Compliance Standards:} Map detected vulnerabilities to regulatory frameworks (e.g., ISO 27001, NIST, GDPR) to align technical findings with governance and audit requirements.
+    \item \textbf{Predictive Business Impact Analytics:} Incorporate predictive modeling to forecast potential financial and operational impact of emerging vulnerabilities and threat trends.
+\end{enumerate}
+
+These enhancements aim to evolve FinRisk into a scalable, reliable, and enterprise-ready solution that provides actionable cybersecurity intelligence, strengthens risk governance, and empowers business leaders to make data-driven decisions with confidence.
