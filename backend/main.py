@@ -56,7 +56,7 @@ from models.org_schemas import (
     MemberResponse,
     NotificationResponse
 )
-from models.project_schemas import ProjectCreate, ProjectSummary, ProjectDetail
+from models.project_schemas import ProjectCreate, ProjectSave, ProjectSummary, ProjectDetail
 
 # Manage Startup and Shutdown events
 @asynccontextmanager
@@ -1080,6 +1080,67 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
     }
 
     # 4. Insert into MongoDB
+    result = await mongo["projects"].insert_one(doc)
+    doc["id"] = str(result.inserted_id)
+
+    return ProjectDetail(
+        id=doc["id"],
+        repo_url=doc["repo_url"],
+        branch=doc["branch"],
+        org_id=doc["org_id"],
+        group_id=doc["group_id"],
+        created_by=doc["created_by"],
+        created_at=doc["created_at"],
+        last_scanned_at=doc["last_scanned_at"],
+        status=doc["status"],
+        vulnerability_count=doc["vulnerability_count"],
+        total_expected_loss=doc["total_expected_loss"],
+        total_fix_cost=doc["total_fix_cost"],
+        gemini_enabled=doc["gemini_enabled"],
+        company=doc["company"],
+        scan_results=doc["scan_results"],
+        attack_chains=doc["attack_chains"],
+        executive_summary=doc["executive_summary"],
+        filtered_count=doc["filtered_count"],
+    )
+
+
+@app.post("/api/projects/save", response_model=ProjectDetail)
+async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
+    """Save pre-computed scan results as a project to MongoDB.
+    
+    Unlike POST /api/projects which re-runs the scan, this endpoint
+    accepts already-computed results (from /scan-repo streaming) and
+    just persists them with the correct org_id + group_id.
+    """
+    if req.org_id:
+        _check_org_membership(req.created_by, req.org_id, db)
+
+    mongo = get_mongo_db()
+    if mongo is None:
+        raise HTTPException(status_code=500, detail="MongoDB not connected")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "repo_url": req.repo_url,
+        "branch": req.branch,
+        "company": req.company,
+        "org_id": req.org_id,
+        "group_id": req.group_id,
+        "created_by": req.created_by,
+        "created_at": now,
+        "last_scanned_at": now,
+        "status": "completed",
+        "scan_results": req.scan_results,
+        "attack_chains": req.attack_chains,
+        "executive_summary": req.executive_summary,
+        "total_expected_loss": req.total_expected_loss,
+        "total_fix_cost": req.total_fix_cost,
+        "vulnerability_count": req.vulnerability_count,
+        "filtered_count": req.filtered_count,
+        "gemini_enabled": req.gemini_enabled,
+    }
+
     result = await mongo["projects"].insert_one(doc)
     doc["id"] = str(result.inserted_id)
 

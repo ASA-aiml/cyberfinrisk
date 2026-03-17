@@ -217,6 +217,28 @@ export const api = {
         });
     },
 
+    async saveProject(payload: {
+        repo_url: string;
+        branch: string;
+        company: any;
+        org_id: string;
+        group_id: string;
+        created_by: string;
+        scan_results: any[];
+        attack_chains: any[];
+        executive_summary: string;
+        total_expected_loss: number;
+        total_fix_cost: number;
+        vulnerability_count: number;
+        filtered_count: number;
+        gemini_enabled: boolean;
+    }): Promise<ProjectDetail> {
+        return fetchAPI("/api/projects/save", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    },
+
     async listProjects(org_id: string, group_id?: string, user_uuid?: string): Promise<Project[]> {
         let endpoint = `/api/projects?org_id=${org_id}`;
         if (group_id) endpoint += `&group_id=${group_id}`;

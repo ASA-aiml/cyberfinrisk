@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, CheckCircle, AlertTriangle, ArrowLeft, Download, Mail } from "lucide-react";
 import ScanTab from "@/components/ScanTab";
 import ManualTab from "@/components/ManualTab";
@@ -13,6 +13,14 @@ import { useOrg } from "@/context/OrgContext";
 import { ExecReport } from "@/components/report/ExecReport";
 
 type ScanState = "idle" | "scanning" | "done" | "error";
+type SaveStatus = "idle" | "saving" | "saved" | "failed";
+
+interface ScanPayload {
+    company: CompanyContext;
+    repo_url: string;
+    branch: string;
+    gemini_api_key: string | null;
+}
 
 const SEV_COLORS: Record<string, string> = {
     critical: "#e63946",
@@ -41,7 +49,10 @@ export default function ScanPage() {
     const [loading, setLoading] = useState(false);
 
     const { user } = useAuth();
-    const { activeOrg } = useOrg();
+    const { activeOrg, activeGroup } = useOrg();
+
+    const [lastScanPayload, setLastScanPayload] = useState<ScanPayload | null>(null);
+    const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
 
     // Mock company context for ManualTab shared context note or simple defaults
     const getCompanyInternal = (): CompanyContext => {
@@ -87,6 +98,8 @@ export default function ScanPage() {
         setScanMessage("Cloning repository...");
         setScanPercent(10);
         setError("");
+        setSaveStatus("idle");
+        setLastScanPayload(payload);
         
         try {
             await api.scanRepoStream(payload, (msg) => {
@@ -107,6 +120,40 @@ export default function ScanPage() {
             setLoading(false);
         }
     }
+
+    // Auto-save project when scan results are available
+    useEffect(() => {
+        if (state !== "done" || !results || !lastScanPayload || !user || !activeOrg) return;
+        if (saveStatus !== "idle") return; // prevent re-saving
+
+        const saveProject = async () => {
+            setSaveStatus("saving");
+            try {
+                await api.saveProject({
+                    repo_url: lastScanPayload.repo_url,
+                    branch: lastScanPayload.branch,
+                    company: lastScanPayload.company,
+                    org_id: activeOrg.id,
+                    group_id: activeGroup?.id || "",
+                    created_by: user.uid,
+                    scan_results: results.results,
+                    attack_chains: results.attack_chains,
+                    executive_summary: results.executive_summary,
+                    total_expected_loss: results.total_expected_loss,
+                    total_fix_cost: results.total_fix_cost,
+                    vulnerability_count: results.vulnerability_count,
+                    filtered_count: results.filtered_count,
+                    gemini_enabled: results.gemini_enabled,
+                });
+                setSaveStatus("saved");
+            } catch (err) {
+                console.error("Failed to save project", err);
+                setSaveStatus("failed");
+            }
+        };
+
+        saveProject();
+    }, [state, results]);
 
     async function handleAnalyze(payload: {
         vulnerabilities: VulnInput[];
@@ -240,6 +287,9 @@ export default function ScanPage() {
                             </p>
                             <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                                 Found {results.results.length} vulnerabilities · Adjusted by AI: {results.gemini_enabled ? "Yes" : "No"}
+                                {saveStatus === "saving" && " · Saving to projects..."}
+                                {saveStatus === "saved" && " · ✓ Saved to projects"}
+                                {saveStatus === "failed" && " · ⚠ Failed to save"}
                             </p>
                         </div>
                     </div>

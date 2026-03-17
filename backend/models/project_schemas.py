@@ -10,9 +10,28 @@ class ProjectCreate(BaseModel):
     branch: str = "main"
     company: CompanyContext
     org_id: str
-    group_id: str
+    group_id: str = ""
     created_by: str  # user UUID
     gemini_api_key: Optional[str] = None
+
+
+class ProjectSave(BaseModel):
+    """Payload for saving pre-computed scan results as a project."""
+    repo_url: str
+    branch: str = "main"
+    company: dict
+    org_id: str
+    group_id: str = ""
+    created_by: str
+    # Pre-computed scan data
+    scan_results: list = []
+    attack_chains: list = []
+    executive_summary: str = ""
+    total_expected_loss: float = 0
+    total_fix_cost: float = 0
+    vulnerability_count: int = 0
+    filtered_count: int = 0
+    gemini_enabled: bool = False
 
 
 class ProjectSummary(BaseModel):
