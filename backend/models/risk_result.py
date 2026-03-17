@@ -35,6 +35,8 @@ class RiskResult(BaseModel):
     line: int
     severity: str
     exposure: str
+    code_context: str = ""                # actual code lines around the vulnerability
+    message: str = ""                     # scanner's description of the issue
     probability_of_exploit: float        # table-based baseline
     gemini_analysis: Optional[GeminiAnalysis] = None
     effective_probability: float         # final probability after Gemini adjustment

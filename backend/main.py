@@ -5,7 +5,7 @@ import re
 from dotenv import load_dotenv
 load_dotenv()
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -256,6 +256,8 @@ def run_risk_engine(
             line                   = f["line"],
             severity               = f.get("severity", "medium"),
             exposure               = exposure,
+            code_context           = f.get("code_context", ""),
+            message                = f.get("message", ""),
             probability_of_exploit = baseline_p,
             gemini_analysis        = gemini_result,
             effective_probability  = effective_p,
@@ -1103,6 +1105,124 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
         executive_summary=doc["executive_summary"],
         filtered_count=doc["filtered_count"],
     )
+
+
+@app.post("/api/projects/{project_id}/solve")
+async def solve_vulnerability(project_id: str, body: dict = Body(...)):
+    """Use Gemini to generate an AI fix for a stored vulnerability.
+
+    Reads code_context + message from the stored scan_results in MongoDB
+    and calls Gemini using the server-side API key (no key needed from client).
+    """
+    vulnerability_id = body.get("vulnerability_id")
+    if not vulnerability_id:
+        raise HTTPException(status_code=422, detail="vulnerability_id is required")
+
+    # Collect all available Gemini keys — rotate on 429 rate-limit
+    gemini_keys = [v for v in [
+        os.environ.get("GEMINI_API_KEY1"),
+        os.environ.get("GEMINI_API_KEY2"),
+        os.environ.get("GEMINI_API_KEY3"),
+        os.environ.get("GEMINI_API_KEY4"),
+        os.environ.get("GEMINI_API_KEY5"),
+        os.environ.get("GEMINI_API_KEY6"),
+        os.environ.get("GEMINI_API_KEY"),
+    ] if v]
+    if not gemini_keys:
+        raise HTTPException(status_code=500, detail="No Gemini API key configured in server .env")
+
+    mongo = get_mongo_db()
+    if mongo is None:
+        raise HTTPException(status_code=500, detail="MongoDB not connected")
+
+    # Fetch the project
+    try:
+        from bson import ObjectId
+        obj_id = ObjectId(project_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid project ID")
+
+    doc = await mongo["projects"].find_one({"_id": obj_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Find the specific vulnerability in scan_results
+    scan_results = doc.get("scan_results", [])
+    vuln = next((r for r in scan_results if r.get("vulnerability_id") == vulnerability_id), None)
+    if not vuln:
+        raise HTTPException(status_code=404, detail=f"Vulnerability '{vulnerability_id}' not found in project")
+
+    code_context = vuln.get("code_context", "")
+    message = vuln.get("message", "")
+    bug_type = vuln.get("bug_type", "unknown")
+    file_path = vuln.get("file", "unknown")
+    line = vuln.get("line", 0)
+    severity = vuln.get("severity", "medium")
+
+    if not code_context and not message:
+        raise HTTPException(
+            status_code=422,
+            detail="This vulnerability has no stored code context. Re-scan the project to capture code lines."
+        )
+
+    prompt = f"""You are a senior security engineer. A vulnerability was found in this codebase.
+
+VULNERABILITY:
+- Type: {bug_type}
+- File: {file_path}, Line: {line}
+- Severity: {severity}
+- Scanner message: {message}
+
+CODE CONTEXT (lines around the vulnerability):
+```
+{code_context if code_context else "Not available"}
+```
+
+Provide a clear, actionable fix for this specific vulnerability.
+Respond ONLY with raw JSON — no markdown fences, no extra text:
+{{
+  "fix_summary": "One sentence describing what to change",
+  "fix_code": "The exact code fix or patch (show before/after if helpful)",
+  "explanation": "2-3 sentences why this fixes the vulnerability",
+  "fix_complexity": "simple or moderate or complex",
+  "additional_steps": "Any extra steps needed (e.g. install package, update config), or empty string"
+}}"""
+
+    # Call Gemini with key rotation — skip to next key on 429
+    import google.generativeai as genai
+    import json as _json
+
+    last_error = ""
+    for attempt_key in gemini_keys:
+        try:
+            genai.configure(api_key=attempt_key)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            if text.startswith("```"):
+                lines_list = text.split("\n")
+                text = "\n".join(lines_list[1:-1] if lines_list[-1].strip() == "```" else lines_list[1:])
+            fix_data = _json.loads(text)
+            return {
+                "vulnerability_id": vulnerability_id,
+                "bug_type": bug_type,
+                "file": file_path,
+                "line": line,
+                "fix_summary": fix_data.get("fix_summary", ""),
+                "fix_code": fix_data.get("fix_code", ""),
+                "explanation": fix_data.get("explanation", ""),
+                "fix_complexity": fix_data.get("fix_complexity", "moderate"),
+                "additional_steps": fix_data.get("additional_steps", ""),
+            }
+        except Exception as e:
+            err_str = str(e)
+            last_error = err_str
+            if "429" in err_str or "RATE_LIMIT" in err_str or "Quota" in err_str:
+                print(f"[AI Solve] Key rate-limited, trying next. Error: {err_str[:120]}")
+                continue
+            raise HTTPException(status_code=500, detail=f"Gemini analysis failed: {err_str}")
+
+    raise HTTPException(status_code=429, detail=f"All Gemini API keys are rate-limited. Try again in a minute.")
 
 
 @app.post("/api/projects/save", response_model=ProjectDetail)
