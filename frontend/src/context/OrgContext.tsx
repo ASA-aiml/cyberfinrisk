@@ -55,7 +55,10 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
     const fetchOrgs = async (force = false) => {
-        if (!user?.uid) { setLoading(false); return; }
+        if (!user?.uid) { 
+            setLoading(false); 
+            return; 
+        }
         
         // 1. Check Cache
         if (!force) {
@@ -69,6 +72,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
                             setActiveOrgState(data[0]);
                             setActiveGroupState(data[0].groups?.[0] ?? null);
                         }
+                        // Even with cache, we set loading to false AFTER setting state
                         setLoading(false);
                         // We still fetch in background to stay fresh
                     }
@@ -79,6 +83,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
+            // Only show full loading if no cache or force refresh
             if (!localStorage.getItem(CACHE_KEY) || force) setLoading(true);
             const orgs: Organization[] = await api.listOrganizations(user.uid);
             setOrganizations(orgs);

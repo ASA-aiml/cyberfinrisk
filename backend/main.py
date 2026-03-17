@@ -1,9 +1,11 @@
 import json, os, shutil, uuid
 from datetime import datetime, timezone
+from pathlib import Path
+import re
 from dotenv import load_dotenv
 load_dotenv()
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -17,10 +19,11 @@ logger = setup_logging()
 
 from models.company import CompanyContext
 from models.risk_result import RiskResult, AttackChain
-from engine.scanner import clone_repo, run_semgrep, parse_semgrep_findings, run_trivy, parse_trivy_findings
+from engine.scanner import clone_repo, run_semgrep, parse_semgrep_findings, run_trivy, parse_trivy_findings, _rmtree_windows_safe
 from engine.classifier import classify_bug, get_fix_effort, load_taxonomy
 from engine.probability_model import load_probabilities, get_probability
 from engine.impact_model import compute_total_impact
+from engine.criticality import get_asset_criticality
 from engine.expected_loss import (compute_expected_loss, compute_priority_score,
                                    compute_fix_cost, compute_roi)
 from engine.ranker import rank_vulnerabilities
@@ -53,7 +56,7 @@ from models.org_schemas import (
     MemberResponse,
     NotificationResponse
 )
-from models.project_schemas import ProjectCreate, ProjectSummary, ProjectDetail
+from models.project_schemas import ProjectCreate, ProjectSave, ProjectSummary, ProjectDetail
 
 # Manage Startup and Shutdown events
 @asynccontextmanager
@@ -71,7 +74,19 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 # Instrument the app for Prometheus
 Instrumentator().instrument(app).expose(app)
@@ -95,6 +110,16 @@ class ScanRequest(BaseModel):
     company: CompanyContext
     gemini_api_key: Optional[str] = None
 
+class ReportPayload(BaseModel):
+    to_email: str
+    company_name: str
+    executive_summary: str
+    total_expected_loss: float
+    total_fix_cost: float
+    vulnerability_count: int
+    top_risks: List[dict]
+    attack_chains: List[dict]
+
 class AnalysisResponse(BaseModel):
     results: List[RiskResult]
     attack_chains: List[AttackChain]
@@ -106,23 +131,45 @@ class AnalysisResponse(BaseModel):
     gemini_enabled: bool
 
 
+class PresetContext(BaseModel):
+    id: str
+    label: str
+    repo_url: str
+    branch: str
+    company: CompanyContext
+
+
 def run_risk_engine(
     findings: list,
     company: CompanyContext,
     gemini_api_key: Optional[str] = None
 ) -> tuple:
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from engine.epss_client import get_epss_scores_bulk
+
+    t0 = time.time()
+
     if gemini_api_key:
         init_gemini(gemini_api_key)
 
     taxonomy      = load_taxonomy()
     probabilities = load_probabilities()
-    results       = []
-    filtered_count = 0
 
+    # ── SPEEDUP 1: Bulk EPSS prefetch (1 HTTP call instead of N) ──────────────
+    all_cve_ids = [
+        (f.get("cve_id") or f.get("raw_rule_id", "")).upper()
+        for f in findings
+    ]
+    epss_cache = get_epss_scores_bulk(all_cve_ids)
+    logger.info(f"[perf] EPSS bulk: {len(epss_cache)} scores in {time.time()-t0:.2f}s")
+
+    # ── Pre-compute per-finding metadata (no I/O, fast) ───────────────────────
+    prepped = []
     for f in findings:
-        bug_type    = classify_bug(f.get("raw_rule_id", ""), f.get("message", ""))
-        fix_effort  = get_fix_effort(bug_type, taxonomy)
-        # Map file to an asset if defined
+        bug_type   = classify_bug(f.get("raw_rule_id", ""), f.get("message", ""))
+        fix_effort = get_fix_effort(bug_type, taxonomy)
+
         asset = None
         if company.assets:
             for ac in company.assets:
@@ -132,35 +179,72 @@ def run_risk_engine(
                         break
                 if asset: break
 
-        # Environment & Exposure override based on asset
-        exposure    = asset.exposure.upper() if asset else f.get("exposure", company.deployment_exposure.upper())
-        baseline_p  = get_probability(bug_type, exposure, probabilities)
+        exposure = asset.exposure.upper() if asset else f.get("exposure", company.deployment_exposure.upper())
 
-        # --- Gemini analysis ---
-        gemini_result = None
-        effective_p   = baseline_p
-        if gemini_api_key and f.get("code_context"):
-            gemini_result = analyze_vulnerability(
-                bug_type=bug_type,
-                file=f["file"],
-                line=f["line"],
-                code_context=f.get("code_context", ""),
-                message=f.get("message", ""),
-                exposure=exposure,
-                company=company,
-                baseline_probability=baseline_p,
-                asset=asset
-            )
-            if gemini_result:
-                effective_p = gemini_result.adjusted_probability
-                # Skip confirmed false positives
-                if gemini_result.false_positive_likelihood == "high" and \
-                   not gemini_result.is_exploitable:
-                    filtered_count += 1
-                    continue  # Actually filter the finding out as per Phase 0 goals
+        cve_id = (f.get("cve_id") or f.get("raw_rule_id", "")).upper()
+        epss_score = epss_cache.get(cve_id)
+        if epss_score is not None:
+            baseline_p = epss_score
+        else:
+            baseline_p, _ = get_probability(bug_type, exposure, probabilities, cve_id=cve_id)
+
+        prepped.append((f, bug_type, fix_effort, asset, exposure, baseline_p))
+
+    # ── SPEEDUP 2: Parallel Gemini analysis via ThreadPoolExecutor ────────────
+    def _analyze_one(args):
+        """Worker: each thread fires one independent Gemini call."""
+        f, bug_type, fix_effort, asset, exposure, baseline_p = args
+        if not (gemini_api_key and f.get("code_context")):
+            return args, None
+        result = analyze_vulnerability(
+            bug_type=bug_type,
+            file=f["file"],
+            line=f["line"],
+            code_context=f.get("code_context", ""),
+            message=f.get("message", ""),
+            exposure=exposure,
+            company=company,
+            baseline_probability=baseline_p,
+            asset=asset
+        )
+        return args, result
+
+    MAX_WORKERS = 10
+    gemini_results_map = {}
+    t_gemini = time.time()
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(_analyze_one, p): p for p in prepped}
+        for future in as_completed(futures):
+            try:
+                args, gemini_result = future.result()
+                gemini_results_map[args[0]["id"]] = (args, gemini_result)
+            except Exception as e:
+                logger.warning(f"[perf] Gemini worker error: {e}")
+
+    logger.info(f"[perf] Parallel Gemini done: {len(prepped)} vulns in {time.time()-t_gemini:.2f}s")
+
+    # ── Assemble results in original order ────────────────────────────────────
+    results = []
+    filtered_count = 0
+
+    for p in prepped:
+        f = p[0]
+        entry = gemini_results_map.get(f["id"])
+        args, gemini_result = entry if entry else (p, None)
+        _, bug_type, fix_effort, asset, exposure, baseline_p = args
+        effective_p = baseline_p
+
+        if gemini_result:
+            effective_p = gemini_result.adjusted_probability
+            if gemini_result.false_positive_likelihood == "high" and not gemini_result.is_exploitable:
+                filtered_count += 1
+                continue
+
 
         breakdown, total_impact = compute_total_impact(company, bug_type, gemini_result, asset)
-        expected_loss  = compute_expected_loss(effective_p, total_impact)
+        _, crit_multiplier, _  = get_asset_criticality(f["file"])
+        expected_loss  = compute_expected_loss(effective_p, total_impact) * crit_multiplier
         priority_score = compute_priority_score(expected_loss, fix_effort)
         fix_cost       = compute_fix_cost(fix_effort, company.engineer_hourly_cost)
         roi            = compute_roi(expected_loss, fix_cost)
@@ -172,6 +256,8 @@ def run_risk_engine(
             line                   = f["line"],
             severity               = f.get("severity", "medium"),
             exposure               = exposure,
+            code_context           = f.get("code_context", ""),
+            message                = f.get("message", ""),
             probability_of_exploit = baseline_p,
             gemini_analysis        = gemini_result,
             effective_probability  = effective_p,
@@ -184,16 +270,23 @@ def run_risk_engine(
             roi_of_fixing          = roi,
             business_brief         = ""
         )
-        result.business_brief = generate_business_brief(result, company)
+        result.business_brief = ""
         results.append(result)
 
     ranked = rank_vulnerabilities(results)
 
-    # --- Attack chain analysis ---
+    # ── SPEEDUP 3: Parallel business brief generation ─────────────────────────
+    def _gen_brief(r):
+        r.business_brief = generate_business_brief(r, company)
+        return r
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        ranked = list(executor.map(_gen_brief, ranked))
+
+    # ── Attack chain analysis (single Gemini call, already fast) ──────────────
     chains = []
     if gemini_api_key and len(ranked) >= 2:
         chains = find_attack_chains(ranked, company)
-        # Tag each result with its chains
         for chain in chains:
             for r in ranked:
                 if r.vulnerability_id in chain.vulnerability_ids:
@@ -201,7 +294,85 @@ def run_risk_engine(
                         r.attack_chains = []
                     r.attack_chains.append(chain.chain_id)
 
+    logger.info(f"[perf] Total engine time: {time.time()-t0:.2f}s for {len(findings)} findings → {len(ranked)} results")
     return ranked, chains, filtered_count
+
+
+def _load_demo_presets() -> list[PresetContext]:
+    """
+    Load demo scan presets from Doc/experiment_log/repo_json.md.
+
+    Each preset is defined as:
+      - A markdown section with a GitHub URL and Branch line
+      - A ```json ... ``` block containing the CompanyContext
+    """
+    doc_path = Path(__file__).parent / "Doc" / "experiment_log" / "repo_json.md"
+    if not doc_path.exists():
+        return []
+
+    text = doc_path.read_text(encoding="utf-8")
+
+    # Find all ```json ... ``` blocks
+    # Example:
+    # ```json
+    # { ... CompanyContext ... }
+    # ```
+    blocks = list(re.finditer(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL))
+    presets: list[PresetContext] = []
+
+    for idx, match in enumerate(blocks):
+        json_str = match.group(1)
+
+        # Look backwards a bit to find section metadata (GitHub + Branch + heading)
+        prefix = text[: match.start()]
+        # Take last ~30 lines before the block
+        lines = prefix.splitlines()
+        context_lines = lines[-30:] if len(lines) > 30 else lines
+
+        label = f"Preset {idx+1}"
+        repo_url = ""
+        branch = "main"
+
+        # Try to find a markdown heading as label
+        for line in reversed(context_lines):
+            line = line.strip()
+            if line.startswith("##"):
+                # Drop leading hashes and asterisks
+                label = line.lstrip("#").strip(" *")
+                break
+
+        # Extract GitHub URL and Branch if present
+        for line in reversed(context_lines):
+            line = line.strip()
+            if "GitHub" in line and "http" in line:
+                m = re.search(r"(https?://\S+)", line)
+                if m:
+                    repo_url = m.group(1)
+            # Match variations like "- **Branch**: `main`" or "* Branch: `master`"
+            lower = line.lower()
+            if "branch" in lower and "`" in line:
+                m = re.search(r"`([^`]+)`", line)
+                if m:
+                    branch = m.group(1)
+
+        try:
+            data = json.loads(json_str)
+            company = CompanyContext(**data)
+        except Exception:
+            continue
+
+        pid = data.get("company_name") or label
+        presets.append(
+            PresetContext(
+                id=str(idx),
+                label=str(pid),
+                repo_url=repo_url,
+                branch=branch,
+                company=company,
+            )
+        )
+
+    return presets
 
 
 @app.post("/analyze-manual", response_model=AnalysisResponse)
@@ -222,42 +393,219 @@ async def analyze_manual(req: ManualScanRequest):
     )
 
 
-@app.post("/scan-repo", response_model=AnalysisResponse)
+@app.post("/scan-repo")
 async def scan_repo(req: ScanRequest):
-    repo_path = None
-    try:
-        repo_path = clone_repo(req.repo_url, req.branch)
-        
-        # Run Semgrep
-        semgrep_raw = run_semgrep(repo_path)
-        semgrep_parsed = parse_semgrep_findings(semgrep_raw, req.company.deployment_exposure, repo_path)
-        
-        # Run Trivy
-        trivy_raw = run_trivy(repo_path)
-        trivy_parsed = parse_trivy_findings(trivy_raw, req.company.deployment_exposure, repo_path)
-        
-        # Merge Findings
-        combined_parsed = semgrep_parsed + trivy_parsed
-        
-        results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
-        os.makedirs("data", exist_ok=True)
-        with open("data/risk_results.json", "w") as f:
-            json.dump({"results": [r.dict() for r in results],
-                       "chains":  [c.dict() for c in chains]}, f, indent=2)
-        summary = generate_executive_summary(results, req.company, chains)
-        return AnalysisResponse(
-            results=results, attack_chains=chains, executive_summary=summary,
-            total_expected_loss=sum(r.expected_loss for r in results),
-            total_fix_cost=sum(r.fix_cost_usd for r in results),
-            vulnerability_count=len(results),
-            filtered_count=filtered,
-            gemini_enabled=bool(req.gemini_api_key)
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if repo_path and os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
+    from fastapi.responses import StreamingResponse
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    async def scan_generator():
+        repo_path = None
+        try:
+            t0 = time.time()
+            
+            # Step 1: Clone
+            yield json.dumps({"status": "progress", "message": "Cloning repository...", "percent": 10}) + "\n"
+            repo_path = clone_repo(req.repo_url, req.branch)
+            logger.info(f"[perf] Clone done in {time.time()-t0:.1f}s")
+
+            # Step 2: Static Analysis
+            yield json.dumps({"status": "progress", "message": "Running Semgrep and Trivy scans...", "percent": 30}) + "\n"
+            t_scan = time.time()
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_semgrep = ex.submit(run_semgrep, repo_path)
+                f_trivy   = ex.submit(run_trivy, repo_path)
+                semgrep_raw = f_semgrep.result()
+                trivy_raw   = f_trivy.result()
+
+            semgrep_parsed  = parse_semgrep_findings(semgrep_raw, req.company.deployment_exposure, repo_path)
+            trivy_parsed    = parse_trivy_findings(trivy_raw, req.company.deployment_exposure, repo_path)
+            combined_parsed = semgrep_parsed + trivy_parsed
+            logger.info(f"[perf] Scanners done in {time.time()-t_scan:.1f}s — {len(combined_parsed)} findings")
+
+            # Step 3: Risk Engine
+            yield json.dumps({"status": "progress", "message": f"Analyzing {len(combined_parsed)} findings with AI models...", "percent": 60}) + "\n"
+            results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
+            
+            # Step 4: Finalizing
+            yield json.dumps({"status": "progress", "message": "Applying financial metrics and ranking risks...", "percent": 90}) + "\n"
+            os.makedirs("data", exist_ok=True)
+            with open("data/risk_results.json", "w") as f:
+                json.dump({"results": [r.dict() for r in results],
+                           "chains":  [c.dict() for c in chains]}, f, indent=2)
+            
+            summary = generate_executive_summary(results, req.company, chains)
+            logger.info(f"[perf] Total /scan-repo: {time.time()-t0:.1f}s")
+
+            final_data = AnalysisResponse(
+                results=results, 
+                attack_chains=chains, 
+                executive_summary=summary,
+                total_expected_loss=sum(r.expected_loss for r in results),
+                total_fix_cost=sum(r.fix_cost_usd for r in results),
+                vulnerability_count=len(results),
+                filtered_count=filtered,
+                gemini_enabled=bool(req.gemini_api_key)
+            )
+            
+            yield json.dumps({"status": "done", "data": final_data.dict()}) + "\n"
+
+        except Exception as e:
+            logger.exception(f"Scan failed: {e}")
+            yield json.dumps({"status": "error", "message": str(e)}) + "\n"
+        finally:
+            if repo_path and os.path.exists(repo_path):
+                _rmtree_windows_safe(repo_path)
+
+    return StreamingResponse(scan_generator(), media_type="application/x-ndjson")
+
+
+
+@app.get("/demo-presets", response_model=List[PresetContext])
+async def list_demo_presets():
+    """
+    Return demo scan presets loaded from Doc/experiment_log/repo_json.md.
+
+    Used by the frontend to quickly preload repo URL + company context
+    for well-known OSS targets (Spree, ERPNext, etc).
+    """
+    return _load_demo_presets()
+
+
+# ==========================================
+# Dashboard Metrics (aggregated from MongoDB)
+# ==========================================
+
+@app.get("/api/dashboard/metrics")
+async def dashboard_metrics(org_id: Optional[str] = None, group_id: Optional[str] = None):
+    """
+    Aggregate real scan data across all projects for the dashboard.
+    Returns metrics, severity breakdown, risk-by-type, and loss-over-time.
+    """
+    mongo = get_mongo_db()
+    if mongo is None:
+        return _empty_dashboard()
+
+    # Build filter
+    filt: dict = {"status": "completed"}
+    if org_id:
+        filt["org_id"] = org_id
+    if group_id:
+        filt["group_id"] = group_id
+
+    projects = await mongo["projects"].find(filt).to_list(length=500)
+
+    if not projects:
+        return _empty_dashboard()
+
+    total_projects = len(projects)
+    total_vulns = 0
+    total_loss = 0.0
+    total_fix_cost = 0.0
+    total_chains = 0
+    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "warning": 0, "error": 0}
+    risk_by_type: dict = {}  # bug_type -> {count, loss}
+    loss_by_date: dict = {}  # date_str -> cumulative loss
+    last_scan_at = None
+    last_scan_repo = ""
+
+    for p in projects:
+        total_vulns += p.get("vulnerability_count", 0)
+        total_loss += p.get("total_expected_loss", 0)
+        total_fix_cost += p.get("total_fix_cost", 0)
+        total_chains += len(p.get("attack_chains", []))
+
+        scan_date = p.get("last_scanned_at") or p.get("created_at", "")
+        if scan_date and (last_scan_at is None or scan_date > last_scan_at):
+            last_scan_at = scan_date
+            last_scan_repo = p.get("repo_url", "")
+
+        # Date for loss-over-time (group by day)
+        date_key = scan_date[:10] if scan_date else "unknown"
+        loss_by_date[date_key] = loss_by_date.get(date_key, 0) + p.get("total_expected_loss", 0)
+
+        # Per-vulnerability aggregation
+        for v in p.get("scan_results", []):
+            sev = v.get("severity", "medium").lower()
+            # Map semgrep severity names to standard levels
+            if sev in ("error",):
+                severity_counts["critical"] = severity_counts.get("critical", 0) + 1
+            elif sev in ("warning",):
+                severity_counts["high"] = severity_counts.get("high", 0) + 1
+            elif sev in severity_counts:
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+            else:
+                severity_counts["medium"] = severity_counts.get("medium", 0) + 1
+
+            bt = v.get("bug_type", "Unknown")
+            if bt not in risk_by_type:
+                risk_by_type[bt] = {"name": bt, "count": 0, "loss": 0}
+            risk_by_type[bt]["count"] += 1
+            risk_by_type[bt]["loss"] += v.get("expected_loss", 0)
+
+    # Sort risk_by_type by loss descending, take top 8
+    risk_by_type_list = sorted(risk_by_type.values(), key=lambda x: x["loss"], reverse=True)[:8]
+
+    # Sort loss_over_time by date
+    loss_over_time = sorted(
+        [{"date": k, "loss": round(v, 2)} for k, v in loss_by_date.items() if k != "unknown"],
+        key=lambda x: x["date"]
+    )
+
+    # Extract repo name from last scan URL
+    repo_name = last_scan_repo.rstrip("/").split("/")[-1] if last_scan_repo else ""
+
+    # Format last scan time as relative
+    last_scan_display = "Never"
+    if last_scan_at:
+        try:
+            from datetime import datetime, timezone
+            scan_dt = datetime.fromisoformat(last_scan_at.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            diff = now - scan_dt
+            if diff.days > 0:
+                last_scan_display = f"{diff.days}d ago"
+            elif diff.seconds > 3600:
+                last_scan_display = f"{diff.seconds // 3600}h ago"
+            else:
+                last_scan_display = f"{diff.seconds // 60}m ago"
+        except Exception:
+            last_scan_display = last_scan_at[:10]
+
+    return {
+        "total_projects": total_projects,
+        "total_vulnerabilities": total_vulns,
+        "total_expected_loss": round(total_loss, 2),
+        "total_fix_cost": round(total_fix_cost, 2),
+        "total_attack_chains": total_chains,
+        "last_scan_at": last_scan_at,
+        "last_scan_display": last_scan_display,
+        "last_scan_repo": repo_name,
+        "severity_breakdown": {
+            "critical": severity_counts.get("critical", 0),
+            "high": severity_counts.get("high", 0),
+            "medium": severity_counts.get("medium", 0),
+            "low": severity_counts.get("low", 0),
+        },
+        "risk_by_type": risk_by_type_list,
+        "loss_over_time": loss_over_time,
+    }
+
+
+def _empty_dashboard():
+    return {
+        "total_projects": 0,
+        "total_vulnerabilities": 0,
+        "total_expected_loss": 0,
+        "total_fix_cost": 0,
+        "total_attack_chains": 0,
+        "last_scan_at": None,
+        "last_scan_display": "Never",
+        "last_scan_repo": "",
+        "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "risk_by_type": [],
+        "loss_over_time": [],
+    }
 
 
 @app.get("/health")
@@ -709,7 +1057,7 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
     finally:
         if repo_path and os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
+            _rmtree_windows_safe(repo_path)
 
     # 3. Build the document
     now = datetime.now(timezone.utc).isoformat()
@@ -734,6 +1082,185 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
     }
 
     # 4. Insert into MongoDB
+    result = await mongo["projects"].insert_one(doc)
+    doc["id"] = str(result.inserted_id)
+
+    return ProjectDetail(
+        id=doc["id"],
+        repo_url=doc["repo_url"],
+        branch=doc["branch"],
+        org_id=doc["org_id"],
+        group_id=doc["group_id"],
+        created_by=doc["created_by"],
+        created_at=doc["created_at"],
+        last_scanned_at=doc["last_scanned_at"],
+        status=doc["status"],
+        vulnerability_count=doc["vulnerability_count"],
+        total_expected_loss=doc["total_expected_loss"],
+        total_fix_cost=doc["total_fix_cost"],
+        gemini_enabled=doc["gemini_enabled"],
+        company=doc["company"],
+        scan_results=doc["scan_results"],
+        attack_chains=doc["attack_chains"],
+        executive_summary=doc["executive_summary"],
+        filtered_count=doc["filtered_count"],
+    )
+
+
+@app.post("/api/projects/{project_id}/solve")
+async def solve_vulnerability(project_id: str, body: dict = Body(...)):
+    """Use Gemini to generate an AI fix for a stored vulnerability.
+
+    Reads code_context + message from the stored scan_results in MongoDB
+    and calls Gemini using the server-side API key (no key needed from client).
+    """
+    vulnerability_id = body.get("vulnerability_id")
+    if not vulnerability_id:
+        raise HTTPException(status_code=422, detail="vulnerability_id is required")
+
+    # Collect all available Gemini keys — rotate on 429 rate-limit
+    gemini_keys = [v for v in [
+        os.environ.get("GEMINI_API_KEY1"),
+        os.environ.get("GEMINI_API_KEY2"),
+        os.environ.get("GEMINI_API_KEY3"),
+        os.environ.get("GEMINI_API_KEY4"),
+        os.environ.get("GEMINI_API_KEY5"),
+        os.environ.get("GEMINI_API_KEY6"),
+        os.environ.get("GEMINI_API_KEY"),
+    ] if v]
+    if not gemini_keys:
+        raise HTTPException(status_code=500, detail="No Gemini API key configured in server .env")
+
+    mongo = get_mongo_db()
+    if mongo is None:
+        raise HTTPException(status_code=500, detail="MongoDB not connected")
+
+    # Fetch the project
+    try:
+        from bson import ObjectId
+        obj_id = ObjectId(project_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Invalid project ID")
+
+    doc = await mongo["projects"].find_one({"_id": obj_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Find the specific vulnerability in scan_results
+    scan_results = doc.get("scan_results", [])
+    vuln = next((r for r in scan_results if r.get("vulnerability_id") == vulnerability_id), None)
+    if not vuln:
+        raise HTTPException(status_code=404, detail=f"Vulnerability '{vulnerability_id}' not found in project")
+
+    code_context = vuln.get("code_context", "")
+    message = vuln.get("message", "")
+    bug_type = vuln.get("bug_type", "unknown")
+    file_path = vuln.get("file", "unknown")
+    line = vuln.get("line", 0)
+    severity = vuln.get("severity", "medium")
+
+    if not code_context and not message:
+        raise HTTPException(
+            status_code=422,
+            detail="This vulnerability has no stored code context. Re-scan the project to capture code lines."
+        )
+
+    prompt = f"""You are a senior security engineer. A vulnerability was found in this codebase.
+
+VULNERABILITY:
+- Type: {bug_type}
+- File: {file_path}, Line: {line}
+- Severity: {severity}
+- Scanner message: {message}
+
+CODE CONTEXT (lines around the vulnerability):
+```
+{code_context if code_context else "Not available"}
+```
+
+Provide a clear, actionable fix for this specific vulnerability.
+Respond ONLY with raw JSON — no markdown fences, no extra text:
+{{
+  "fix_summary": "One sentence describing what to change",
+  "fix_code": "The exact code fix or patch (show before/after if helpful)",
+  "explanation": "2-3 sentences why this fixes the vulnerability",
+  "fix_complexity": "simple or moderate or complex",
+  "additional_steps": "Any extra steps needed (e.g. install package, update config), or empty string"
+}}"""
+
+    # Call Gemini with key rotation — skip to next key on 429
+    import google.generativeai as genai
+    import json as _json
+
+    last_error = ""
+    for attempt_key in gemini_keys:
+        try:
+            genai.configure(api_key=attempt_key)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            if text.startswith("```"):
+                lines_list = text.split("\n")
+                text = "\n".join(lines_list[1:-1] if lines_list[-1].strip() == "```" else lines_list[1:])
+            fix_data = _json.loads(text)
+            return {
+                "vulnerability_id": vulnerability_id,
+                "bug_type": bug_type,
+                "file": file_path,
+                "line": line,
+                "fix_summary": fix_data.get("fix_summary", ""),
+                "fix_code": fix_data.get("fix_code", ""),
+                "explanation": fix_data.get("explanation", ""),
+                "fix_complexity": fix_data.get("fix_complexity", "moderate"),
+                "additional_steps": fix_data.get("additional_steps", ""),
+            }
+        except Exception as e:
+            err_str = str(e)
+            last_error = err_str
+            if "429" in err_str or "RATE_LIMIT" in err_str or "Quota" in err_str:
+                print(f"[AI Solve] Key rate-limited, trying next. Error: {err_str[:120]}")
+                continue
+            raise HTTPException(status_code=500, detail=f"Gemini analysis failed: {err_str}")
+
+    raise HTTPException(status_code=429, detail=f"All Gemini API keys are rate-limited. Try again in a minute.")
+
+
+@app.post("/api/projects/save", response_model=ProjectDetail)
+async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
+    """Save pre-computed scan results as a project to MongoDB.
+    
+    Unlike POST /api/projects which re-runs the scan, this endpoint
+    accepts already-computed results (from /scan-repo streaming) and
+    just persists them with the correct org_id + group_id.
+    """
+    if req.org_id:
+        _check_org_membership(req.created_by, req.org_id, db)
+
+    mongo = get_mongo_db()
+    if mongo is None:
+        raise HTTPException(status_code=500, detail="MongoDB not connected")
+
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "repo_url": req.repo_url,
+        "branch": req.branch,
+        "company": req.company,
+        "org_id": req.org_id,
+        "group_id": req.group_id,
+        "created_by": req.created_by,
+        "created_at": now,
+        "last_scanned_at": now,
+        "status": "completed",
+        "scan_results": req.scan_results,
+        "attack_chains": req.attack_chains,
+        "executive_summary": req.executive_summary,
+        "total_expected_loss": req.total_expected_loss,
+        "total_fix_cost": req.total_fix_cost,
+        "vulnerability_count": req.vulnerability_count,
+        "filtered_count": req.filtered_count,
+        "gemini_enabled": req.gemini_enabled,
+    }
+
     result = await mongo["projects"].insert_one(doc)
     doc["id"] = str(result.inserted_id)
 
@@ -939,7 +1466,7 @@ async def scan_all_projects(
                 pass
         finally:
             if repo_path and os.path.exists(repo_path):
-                shutil.rmtree(repo_path)
+                _rmtree_windows_safe(repo_path)
 
     return {
         "scanned": len(results_summary),
@@ -947,3 +1474,21 @@ async def scan_all_projects(
         "results": results_summary,
         "errors": errors,
     }
+
+@app.post("/api/send-report")
+async def send_report_endpoint(payload: ReportPayload):
+    try:
+        from utils.email_utils import send_report_email
+        await send_report_email(
+            payload.to_email,
+            payload.company_name,
+            payload.executive_summary,
+            payload.total_expected_loss,
+            payload.total_fix_cost,
+            payload.vulnerability_count,
+            payload.top_risks,
+            payload.attack_chains
+        )
+        return {"status": "sent", "to": payload.to_email}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -20,6 +20,14 @@ export interface CompanyContext {
     product_description: string | null;
 }
 
+export interface PresetContext {
+    id: string;
+    label: string;
+    repo_url: string;
+    branch: string;
+    company: CompanyContext;
+}
+
 export interface GeminiAnalysis {
     business_context: string;
     is_exploitable: boolean;
@@ -36,6 +44,8 @@ export interface VulnerabilityResult {
     line: number;
     severity: string;
     exposure: string;
+    code_context: string;          // actual code lines around the vulnerability
+    message: string;               // scanner's description of the issue
     expected_loss: number;
     total_impact: number;
     fix_cost_usd: number;

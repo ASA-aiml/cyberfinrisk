@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, CheckCircle, AlertTriangle, ArrowLeft } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Loader2, CheckCircle, AlertTriangle, ArrowLeft, Download, Mail } from "lucide-react";
 import ScanTab from "@/components/ScanTab";
 import ManualTab from "@/components/ManualTab";
 import { api } from "@/lib/api";
@@ -10,8 +10,17 @@ import { fmtMoney } from "@/lib/utils";
 import TopBar from "@/components/dashboard/TopBar";
 import { useAuth } from "@/context/AuthContext";
 import { useOrg } from "@/context/OrgContext";
+import { ExecReport } from "@/components/report/ExecReport";
 
 type ScanState = "idle" | "scanning" | "done" | "error";
+type SaveStatus = "idle" | "saving" | "saved" | "failed";
+
+interface ScanPayload {
+    company: CompanyContext;
+    repo_url: string;
+    branch: string;
+    gemini_api_key: string | null;
+}
 
 const SEV_COLORS: Record<string, string> = {
     critical: "#e63946",
@@ -42,6 +51,9 @@ export default function ScanPage() {
     const { user } = useAuth();
     const { activeOrg, activeGroup } = useOrg();
 
+    const [lastScanPayload, setLastScanPayload] = useState<ScanPayload | null>(null);
+    const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+
     // Mock company context for ManualTab shared context note or simple defaults
     const getCompanyInternal = (): CompanyContext => {
         // This is used by ManualTab to get company context if shared.
@@ -67,6 +79,9 @@ export default function ScanPage() {
         };
     };
 
+    const [scanMessage, setScanMessage] = useState("");
+    const [scanPercent, setScanPercent] = useState(0);
+
     async function handleScan(payload: {
         company: CompanyContext;
         repo_url: string;
@@ -80,27 +95,24 @@ export default function ScanPage() {
 
         setLoading(true);
         setState("scanning");
+        setScanMessage("Cloning repository...");
+        setScanPercent(10);
         setError("");
+        setSaveStatus("idle");
+        setLastScanPayload(payload);
+        
         try {
-            const data = await api.createProject({
-                ...payload,
-                org_id: activeOrg.id,
-                group_id: activeGroup?.id || "",
-                created_by: user.uid
+            await api.scanRepoStream(payload, (msg) => {
+                if (msg.status === "progress") {
+                    if (msg.message) setScanMessage(msg.message);
+                    if (msg.percent) setScanPercent(msg.percent);
+                } else if (msg.status === "done" && msg.data) {
+                    setResults(msg.data);
+                    setState("done");
+                } else if (msg.status === "error") {
+                    throw new Error(msg.message || "Scan failed unexpectedly");
+                }
             });
-
-            // Map ProjectDetail back to ScanResults for UI compatibility
-            setResults({
-                results: data.scan_results,
-                attack_chains: data.attack_chains,
-                executive_summary: data.executive_summary,
-                total_expected_loss: data.total_expected_loss,
-                total_fix_cost: data.total_fix_cost,
-                vulnerability_count: data.vulnerability_count,
-                filtered_count: data.filtered_count,
-                gemini_enabled: data.gemini_enabled,
-            });
-            setState("done");
         } catch (err: any) {
             setError(err.message || "Failed to scan repository");
             setState("error");
@@ -109,6 +121,40 @@ export default function ScanPage() {
         }
     }
 
+    // Auto-save project when scan results are available
+    useEffect(() => {
+        if (state !== "done" || !results || !lastScanPayload || !user || !activeOrg) return;
+        if (saveStatus !== "idle") return; // prevent re-saving
+
+        const saveProject = async () => {
+            setSaveStatus("saving");
+            try {
+                await api.saveProject({
+                    repo_url: lastScanPayload.repo_url,
+                    branch: lastScanPayload.branch,
+                    company: lastScanPayload.company,
+                    org_id: activeOrg.id,
+                    group_id: activeGroup?.id || "",
+                    created_by: user.uid,
+                    scan_results: results.results,
+                    attack_chains: results.attack_chains,
+                    executive_summary: results.executive_summary,
+                    total_expected_loss: results.total_expected_loss,
+                    total_fix_cost: results.total_fix_cost,
+                    vulnerability_count: results.vulnerability_count,
+                    filtered_count: results.filtered_count,
+                    gemini_enabled: results.gemini_enabled,
+                });
+                setSaveStatus("saved");
+            } catch (err) {
+                console.error("Failed to save project", err);
+                setSaveStatus("failed");
+            }
+        };
+
+        saveProject();
+    }, [state, results]);
+
     async function handleAnalyze(payload: {
         vulnerabilities: VulnInput[];
         company: CompanyContext;
@@ -116,6 +162,8 @@ export default function ScanPage() {
     }) {
         setLoading(true);
         setState("scanning");
+        setScanMessage("Analyzing vulnerabilities...");
+        setScanPercent(30);
         setError("");
         try {
             const data = await api.analyzeManual(payload);
@@ -190,14 +238,20 @@ export default function ScanPage() {
                 >
                     <Loader2 size={40} className="mx-auto mb-4 animate-spin" style={{ color: "var(--accent)" }} />
                     <h3 className="font-bold text-lg mb-1">
-                        {activeTab === "scan" ? "Scanning repository..." : "Analyzing vulnerabilities..."}
+                        {scanMessage}
                     </h3>
                     <p className="text-sm mb-6" style={{ color: "var(--muted-foreground)" }}>
                         {activeTab === "scan" ? "This may take a minute depending on repo size" : "Applying financial models and processing AI requests"}
                     </p>
                     <div className="w-full rounded-full h-1.5 mb-2 overflow-hidden" style={{ background: "var(--surface)" }}>
-                        <div className="h-full bg-[var(--accent)] animate-progress" style={{ width: "30%" }} />
+                        <div 
+                            className="h-full bg-[var(--accent)] transition-all duration-500 ease-out" 
+                            style={{ width: `${scanPercent}%` }} 
+                        />
                     </div>
+                    <p className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                        {scanPercent}% Complete
+                    </p>
                 </div>
             )}
 
@@ -233,6 +287,9 @@ export default function ScanPage() {
                             </p>
                             <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                                 Found {results.results.length} vulnerabilities · Adjusted by AI: {results.gemini_enabled ? "Yes" : "No"}
+                                {saveStatus === "saving" && " · Saving to projects..."}
+                                {saveStatus === "saved" && " · ✓ Saved to projects"}
+                                {saveStatus === "failed" && " · ⚠ Failed to save"}
                             </p>
                         </div>
                     </div>
@@ -283,14 +340,62 @@ export default function ScanPage() {
                         </div>
                     </div>
 
-                    {results.executive_summary && (
-                        <div className="rounded-xl p-6 mb-8" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                            <h3 className="font-bold text-sm mb-4">Executive Summary</h3>
-                            <div className="text-sm leading-relaxed whitespace-pre-wrap text-[var(--muted-foreground)]">
-                                {results.executive_summary}
-                            </div>
+                    {/* ── Executive Report ── */}
+                    <div className="mb-8">
+                        {/* action buttons */}
+                        <div className="flex items-center gap-3 mb-4">
+                            <h3 className="text-sm font-bold flex-1">Executive Report</h3>
+                            <button
+                                onClick={async () => {
+                                    const html2pdf = (await import("html2pdf.js" as any)).default;
+                                    const el = document.getElementById("exec-report");
+                                    if (!el) return;
+                                    html2pdf().set({
+                                        margin: 0,
+                                        filename: `cyberfinrisk-report-${Date.now()}.pdf`,
+                                        image: { type: "jpeg", quality: 0.98 },
+                                        html2canvas: { scale: 2, backgroundColor: "#0f1117" },
+                                        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+                                    }).from(el).save();
+                                }}
+                                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all hover:opacity-90 text-white"
+                                style={{ background: "#1e2230", border: "1px solid var(--border)" }}
+                            >
+                                <Download size={13} /> Download PDF
+                            </button>
+                            {user?.email && (
+                                <button
+                                    onClick={async () => {
+                                        try {
+                                            await api.sendReport({
+                                                to_email: user.email!,
+                                                company_name: results.results[0]?.file?.split("\\")[0] || "Your Project",
+                                                executive_summary: results.executive_summary,
+                                                total_expected_loss: results.total_expected_loss,
+                                                total_fix_cost: results.total_fix_cost,
+                                                vulnerability_count: results.vulnerability_count,
+                                                top_risks: [...results.results].sort((a, b) => b.expected_loss - a.expected_loss).slice(0, 5),
+                                                attack_chains: results.attack_chains,
+                                            });
+                                            alert(`Report emailed to ${user.email}`);
+                                        } catch (e: any) {
+                                            alert("Failed to send email: " + e.message);
+                                        }
+                                    }}
+                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all hover:opacity-90 text-white"
+                                    style={{ background: "var(--accent)", border: "1px solid var(--accent)" }}
+                                >
+                                    <Mail size={13} /> Email Report
+                                </button>
+                            )}
                         </div>
-                    )}
+                        <ExecReport
+                            results={results}
+                            companyName={activeOrg?.name || "Your Project"}
+                            repoUrl={typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("repo") || undefined : undefined}
+                            scanDate={new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+                        />
+                    </div>
 
                     <button
                         onClick={reset}

@@ -1,4 +1,4 @@
-import { ScanResults, CompanyContext, VulnInput, Project, ProjectDetail } from "./types";
+import { ScanResults, CompanyContext, VulnInput, Project, ProjectDetail, PresetContext } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -31,6 +31,10 @@ export const api = {
         return fetchAPI("/health");
     },
 
+    async demoPresets(): Promise<PresetContext[]> {
+        return fetchAPI("/demo-presets");
+    },
+
     async analyzeManual(payload: {
         vulnerabilities: VulnInput[];
         company: CompanyContext;
@@ -48,10 +52,56 @@ export const api = {
         branch: string;
         gemini_api_key: string | null;
     }): Promise<ScanResults> {
+        // Fallback or legacy wrapper if needed, but we'll use scanRepoStream for live updates
         return fetchAPI("/scan-repo", {
             method: "POST",
             body: JSON.stringify(payload),
         });
+    },
+
+    async scanRepoStream(
+        payload: {
+            company: CompanyContext;
+            repo_url: string;
+            branch: string;
+            gemini_api_key: string | null;
+        },
+        onMessage: (msg: { status: string; message?: string; percent?: number; data?: ScanResults }) => void
+    ): Promise<void> {
+        const response = await fetch(`${API_URL}/scan-repo`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: "Scan failed" }));
+            throw new Error(err.detail || "Scan request failed");
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) throw new Error("No response body");
+
+        let buffer = "";
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const msg = JSON.parse(line);
+                    onMessage(msg);
+                } catch (e) {
+                    console.error("Failed to parse NDJSON line:", e);
+                }
+            }
+        }
     },
 
     async createOrganization(payload: {
@@ -167,6 +217,28 @@ export const api = {
         });
     },
 
+    async saveProject(payload: {
+        repo_url: string;
+        branch: string;
+        company: any;
+        org_id: string;
+        group_id: string;
+        created_by: string;
+        scan_results: any[];
+        attack_chains: any[];
+        executive_summary: string;
+        total_expected_loss: number;
+        total_fix_cost: number;
+        vulnerability_count: number;
+        filtered_count: number;
+        gemini_enabled: boolean;
+    }): Promise<ProjectDetail> {
+        return fetchAPI("/api/projects/save", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    },
+
     async listProjects(org_id: string, group_id?: string, user_uuid?: string): Promise<Project[]> {
         let endpoint = `/api/projects?org_id=${org_id}`;
         if (group_id) endpoint += `&group_id=${group_id}`;
@@ -187,5 +259,40 @@ export const api = {
         if (group_id) endpoint += `&group_id=${group_id}`;
         if (user_uuid) endpoint += `&user_uuid=${user_uuid}`;
         return fetchAPI(endpoint, { method: "POST" });
+    },
+
+    // ── Dashboard Metrics ────────────────────────────────────────────────────
+
+    async getDashboardMetrics(org_id?: string, group_id?: string): Promise<any> {
+        let endpoint = "/api/dashboard/metrics";
+        const params: string[] = [];
+        if (org_id) params.push(`org_id=${org_id}`);
+        if (group_id) params.push(`group_id=${group_id}`);
+        if (params.length) endpoint += `?${params.join("&")}`;
+        return fetchAPI(endpoint);
+    },
+
+    async sendReport(payload: any): Promise<any> {
+        return fetchAPI("/api/send-report", {
+            method: "POST",
+            body: JSON.stringify(payload)
+        });
+    },
+
+    async solveVulnerability(project_id: string, vulnerability_id: string): Promise<{
+        vulnerability_id: string;
+        bug_type: string;
+        file: string;
+        line: number;
+        fix_summary: string;
+        fix_code: string;
+        explanation: string;
+        fix_complexity: string;
+        additional_steps: string;
+    }> {
+        return fetchAPI(`/api/projects/${project_id}/solve`, {
+            method: "POST",
+            body: JSON.stringify({ vulnerability_id }),
+        });
     },
 };
