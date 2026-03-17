@@ -35,6 +35,7 @@ class RiskResult(BaseModel):
     line: int
     severity: str
     exposure: str
+    message: str
     probability_of_exploit: float        # table-based baseline
     gemini_analysis: Optional[GeminiAnalysis] = None
     effective_probability: float         # final probability after Gemini adjustment

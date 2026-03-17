@@ -21,6 +21,8 @@ def fmt_range(amount: float) -> str:
 
 
 def humanize_data_types(data_types: list) -> str:
+    if not data_types:
+        return "sensitive data"
     mapping = {
         "pii": "customer personal information",
         "financial": "payment and financial data",
@@ -28,6 +30,7 @@ def humanize_data_types(data_types: list) -> str:
         "credentials": "login credentials"
     }
     labels = [mapping.get(d.lower(), d) for d in data_types]
+    if len(labels) == 0: return "sensitive information"
     if len(labels) == 1: return labels[0]
     return ", ".join(labels[:-1]) + " and " + labels[-1]
 
@@ -51,13 +54,14 @@ def generate_business_brief(result: RiskResult, company: CompanyContext) -> str:
     story      = stories.get(result.bug_type, stories["UNKNOWN"])
     urgency    = get_urgency(result.expected_loss)
     bug_label  = result.bug_type.replace("_", " ").title()
+    gemini_analysis = result.gemini_analysis
     prob_pct   = round(result.effective_probability * 100)
     b          = result.impact_breakdown
     records    = f"{company.estimated_records_stored:,}"
     data_label = humanize_data_types(company.sensitive_data_types)
     fix_cost   = result.fix_effort_hours * company.engineer_hourly_cost
     roi_mult   = int(result.expected_loss / fix_cost) if fix_cost > 0 else 0
-    frameworks = "/".join(company.regulatory_frameworks)
+    frameworks = "/".join(company.regulatory_frameworks) or "Standard"
 
     # Format attack steps with company context
     steps_text = ""
@@ -109,46 +113,59 @@ HOW TO FIX IT
   {result.gemini_analysis.recommended_fix}
 """
 
-    return f"""{'='*65}
-  {urgency['icon']} {urgency['label']}
-  {urgency['subtitle']}
-  Location: {result.file}, line {result.line}
-{'='*65}
+    # AI status note
+    quota_note = ""
+    if not result.gemini_analysis:
+        quota_note = "\n> [!NOTE]\n> AI analysis limit reached or unavailable — showing standard results.\n"
 
-WHAT IS BROKEN (plain English)
-  {story['real_world_analogy']}
-  Technical name: {bug_label}
-  Accessible from: {'The public internet' if result.exposure == 'PUBLIC' else 'Internal network only'}
+    return f"""### {urgency['label']}
+{urgency['subtitle']}
+{quota_note}
+
+**Location**: `{result.file}`, line {result.line}
+
+#### WHAT IS BROKEN
+{gemini_analysis.business_context if gemini_analysis and gemini_analysis.business_context else "Technical vulnerability identified in the component codebase."}
+
+**Technical Issue**: {result.message}
+
+**Technical name**: {bug_label}
+**Accessible from**: {'The public internet' if result.exposure == 'PUBLIC' else 'Internal network only'}
+
 {gemini_block}
-HOW A REAL BREACH HAPPENS — STEP BY STEP
-{steps_text}
-  Attacker effort required: {story['attacker_effort']}
-  How hard to detect:       {story['detection_difficulty']}
-  Real-world precedent:     {story.get('comparable_breach', 'N/A')}
 
-WHAT THIS COSTS {company.company_name.upper()} IF NOT FIXED
-{cost_lines}  {'─'*55}
-  {'TOTAL POTENTIAL LOSS:':<42} {fmt_range(result.total_impact)}
+{f"#### HOW A REAL BREACH HAPPENS — STEP BY STEP" if not gemini_analysis or gemini_analysis.is_exploitable else ""}
+{steps_text if not gemini_analysis or gemini_analysis.is_exploitable else ""}
 
-  Probability of exploitation: {prob_pct}%
+- **Attacker effort required**: {story['attacker_effort']}
+- **How hard to detect**: {story['detection_difficulty']}
+- **Real-world precedent**: {story.get('comparable_breach', 'N/A')}
+
+#### WHAT THIS COSTS {company.company_name.upper()} IF NOT FIXED
+{cost_lines}
+**TOTAL POTENTIAL LOSS**: {fmt_range(result.total_impact)}
+
+- **Probability of exploitation**: {prob_pct}%
   {'(AI-adjusted from baseline based on code analysis and system role)' if result.gemini_analysis else '(Based on industry data for this exposure level)'}
 
-  EXPECTED LOSS (probability × impact): {fmt_range(result.expected_loss)}
-  This is the actuarial cost of carrying this risk unresolved.
+- **EXPECTED LOSS (probability × impact)**: {fmt_range(result.expected_loss)}
+  *This is the actuarial cost of carrying this risk unresolved.*
 
-WHAT THE FIX COSTS
-  Engineer time:  {result.fix_effort_hours} hours
-  Salary cost:    {fmt(fix_cost)}
-  ROI of fixing:  {roi_mult}× — every $1 spent saves ${roi_mult} in expected loss.
+#### WHAT THE FIX COSTS
+- **Engineer time**: {result.fix_effort_hours} hours
+- **Salary cost**: {fmt(fix_cost)}
+- **ROI of fixing**: {roi_mult}× — every $1 spent saves ${roi_mult} in expected loss.
+
 {fix_guidance}
-WHAT THE PRESS WOULD WRITE IF THIS IS EXPLOITED
-  "{headline}"
 
-DECISION REQUIRED
-  {urgency['action']}
-  → Approve fix this sprint?   [ YES / NO ]
-  → Accept risk and delay?     [ YES — requires written sign-off / NO ]
-{'='*65}""".strip()
+#### WHAT THE PRESS WOULD WRITE IF THIS IS EXPLOITED
+> "{headline}"
+
+#### DECISION REQUIRED
+{urgency['action']}
+
+- **Approve fix this sprint?** [ YES / NO ]
+- **Accept risk and delay?** [ YES — requires written sign-off / NO ]""".strip()
 
 
 def generate_executive_summary(results: list, company: CompanyContext,
@@ -207,31 +224,30 @@ def generate_executive_summary(results: list, company: CompanyContext,
   6–18 months if unaddressed.
 """
 
-    return f"""{'='*65}
-  SECURITY RISK EXECUTIVE SUMMARY
-  {company.company_name} — Board / Leadership Review
-{'='*65}
+    return f"""# SECURITY RISK EXECUTIVE SUMMARY
+**{company.company_name} — Board / Leadership Review**
 
-BOTTOM LINE
-  We have {len(results)} distinct grouped security vulnerabilities.
-  Total exposure if all exploited:              {fmt_range(total_impact)}
-  Expected loss (probability-adjusted):         {fmt_range(total_loss)}
-  Total cost to fix everything:                 {fmt(total_fix_cost)} ({total_hours:.0f} hours)
-  Fixing yields up to {roi}× ROI compared to expected loss.
+## BOTTOM LINE
+We have **{len(results)}** distinct grouped security vulnerabilities.
+
+- **Total exposure if all exploited**: {fmt_range(total_impact)}
+- **Expected loss (probability-adjusted)**: {fmt_range(total_loss)}
+- **Total cost to fix everything**: {fmt(total_fix_cost)} ({total_hours:.0f} hours)
+- **Fixing yields up to {roi}× ROI** compared to expected loss.
 {gemini_note}
 
-RISK BREAKDOWN
-  🔴 Critical — act this week:   {len(critical)} {'vulnerability' if len(critical)==1 else 'vulnerabilities'}
-  🟠 High — act this sprint:     {len(high)} {'vulnerability' if len(high)==1 else 'vulnerabilities'}
-  🟡 Medium / Low — schedule:    {len(other)} {'vulnerability' if len(other)==1 else 'vulnerabilities'}
+## RISK BREAKDOWN
+- 🔴 **Critical** — act this week: {len(critical)} {'vulnerability' if len(critical)==1 else 'vulnerabilities'}
+- 🟠 **High** — act this sprint: {len(high)} {'vulnerability' if len(high)==1 else 'vulnerabilities'}
+- 🟡 **Medium / Low** — schedule: {len(other)} {'vulnerability' if len(other)==1 else 'vulnerabilities'}
 
-TOP 3 RISKS BY FINANCIAL EXPOSURE
-{top3}{chain_block}
+## TOP RISKS BY FINANCIAL EXPOSURE
+{top3}
+{chain_block}
+
 {do_nothing}
 
-WHAT WE ARE ASKING FOR
-  Approval to allocate {total_hours:.0f} engineering hours to address
-  the {len(critical)} critical and {len(high)} high-priority vulnerabilities.
-  Estimated cost: {fmt(total_fix_cost)}.
+## WHAT WE ARE ASKING FOR
+Approval to allocate **{total_hours:.0f} engineering hours** to address the **{len(critical)} critical** and **{len(high)} high-priority** vulnerabilities.
 
-{'='*65}""".strip()
+**Estimated cost**: {fmt(total_fix_cost)}""".strip()

@@ -247,8 +247,25 @@ export default function ScanTab({ onScan, error, loading }: ScanTabProps) {
 
     function applyCompanyToForm(data: any) {
         if (companyName.current && data.company_name) companyName.current.value = data.company_name;
-        if (industry.current && data.industry) industry.current.value = data.industry;
-        if (companySize.current && data.company_size) companySize.current.value = data.company_size;
+        
+        // Industry fuzzy matching
+        if (industry.current && data.industry) {
+            const ind = data.industry.toLowerCase();
+            if (ind.includes("finance")) industry.current.value = "finance";
+            else if (ind.includes("health")) industry.current.value = "healthcare";
+            else if (ind.includes("tech")) industry.current.value = "technology";
+            else if (ind.includes("retail") || ind.includes("commerce")) industry.current.value = "retail";
+            else if (ind.includes("edu")) industry.current.value = "education";
+        }
+
+        // Company Size mapping
+        if (companySize.current && data.company_size) {
+            const size = data.company_size.toLowerCase();
+            if (size.includes("startup")) companySize.current.value = "startup";
+            else if (size.includes("enterprise") || size.includes("large")) companySize.current.value = "enterprise";
+            else companySize.current.value = "mid_size";
+        }
+
         if (systemRole.current && data.system_role) systemRole.current.value = data.system_role;
         if (annualRevenue.current && data.annual_revenue) annualRevenue.current.value = String(data.annual_revenue);
         if (monthlyRevenue.current && data.monthly_revenue) monthlyRevenue.current.value = String(data.monthly_revenue);
@@ -259,9 +276,15 @@ export default function ScanTab({ onScan, error, loading }: ScanTabProps) {
         if (downtimeCost.current && data.estimated_downtime_cost_per_hour) downtimeCost.current.value = String(data.estimated_downtime_cost_per_hour);
         if (productDesc.current && data.product_description) productDesc.current.value = data.product_description;
         if (stackDesc.current && data.stack_description) stackDesc.current.value = data.stack_description;
+        
+        if (repoUrl.current && data.repo_url) repoUrl.current.value = data.repo_url;
+        if (branch.current && data.branch) branch.current.value = data.branch;
+
         if (data.deployment_exposure && exposure.current) {
             const exp = (data.deployment_exposure as string).toLowerCase();
-            exposure.current.value = exp.includes("public") ? "public" : exp.includes("internal") ? "internal" : "private";
+            if (exp.includes("public")) exposure.current.value = "public";
+            else if (exp.includes("internal")) exposure.current.value = "internal";
+            else exposure.current.value = "private";
         }
         if (data.sensitive_data_types) setDataTypes(data.sensitive_data_types);
         if (data.regulatory_frameworks) setRegulations(data.regulatory_frameworks);

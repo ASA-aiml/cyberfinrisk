@@ -167,6 +167,34 @@
         "headline_template": "{company} Customers' Accounts Manipulated Without Their Knowledge via Website Flaw",
         "comparable_breach": "A CSRF flaw in a major bank allowed attackers to initiate transfers from customers' accounts via a single malicious link sent by email."
     },
+    "VULNERABLE_DEPENDENCY": {
+        "victim_label": "customer data and system integrity",
+        "attacker_effort": "extremely low — automated scripts scan for known CVEs across millions of sites",
+        "detection_difficulty": "very hard — exploitation often happens at the library level, bypassing app logs",
+        "steps": [
+            "Attacker identifies that we are using a specific version of a third-party library with a known security hole (CVE).",
+            "Public exploit code is readily available for this vulnerability on sites like GitHub or Exploit-DB.",
+            "Attacker runs the exploit against our server. Because the vulnerability is in a core library, it often bypasses our own security checks.",
+            "They achieve unauthorized data access, server control, or service disruption depending on the nature of the specific dependency bug."
+        ],
+        "real_world_analogy": "Using a high-security vault but with a lock that has a known factory defect. The vault itself is strong, but the standard lock is easy to pick.",
+        "headline_template": "{company} Infrastructure Compromised via Known Vulnerability in Third-Party Component",
+        "comparable_breach": "Equifax (2017) — A known vulnerability in the Apache Struts web framework (CVE-2017-5638) was exploited because it wasn't patched. 147 million records stolen. $1.4B in total costs."
+    },
+    "MISCONFIGURATION": {
+        "victim_label": "internal systems and sensitive configurations",
+        "attacker_effort": "low — bots specifically scan for common cloud and server misconfigurations",
+        "detection_difficulty": "medium — often visible in audit logs if they are being monitored",
+        "steps": [
+            "Our system is deployed with a non-secure default setting, an open port, or overly permissive access controls.",
+            "Attacker scanning tools detect the open 'back door' that was left open by mistake.",
+            "They use this misconfiguration to gain a foothold in our network, bypassing intended security boundaries.",
+            "From here, they pivot to more sensitive systems, steal credentials, or leak configuration data that allows further attacks."
+        ],
+        "real_world_analogy": "Installing a state-of-the-art security system but forgetting to change the default '0000' passcode.",
+        "headline_template": "{company} Data Exposed due to Cloud Infrastructure Misconfiguration",
+        "comparable_breach": "Capital One (2019) — An SSRF attack combined with a misconfigured WAF role allowed an attacker to access S3 buckets containing 100 million customer applications."
+    },
     "UNKNOWN": {
         "victim_label": "undetermined assets",
         "attacker_effort": "unknown — requires manual assessment",

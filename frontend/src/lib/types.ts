@@ -35,6 +35,7 @@ export interface GeminiAnalysis {
     exploitability_reasoning: string;
     recommended_fix: string;
     false_positive_likelihood: string;
+    fix_complexity?: string;
 }
 
 export interface VulnerabilityResult {

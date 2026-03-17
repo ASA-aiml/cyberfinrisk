@@ -65,8 +65,12 @@ export const api = {
             repo_url: string;
             branch: string;
             gemini_api_key: string | null;
+            org_id: string;
+            group_id: string;
+            user_uuid: string;
+            project_id?: string;
         },
-        onMessage: (msg: { status: string; message?: string; percent?: number; data?: ScanResults }) => void
+        onMessage: (msg: { status: string; message?: string; percent?: number; data?: ScanResults; project_id?: string }) => void
     ): Promise<void> {
         const response = await fetch(`${API_URL}/scan-repo`, {
             method: "POST",

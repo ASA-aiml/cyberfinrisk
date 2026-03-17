@@ -44,7 +44,7 @@ const OrgContext = createContext<OrgContextType | undefined>(undefined);
 
 
 export function OrgProvider({ children }: { children: React.ReactNode }) {
-    const { user } = useAuth();
+    const { user, loading: authLoading } = useAuth();
 
     const [organizations, setOrganizations] = useState<Organization[]>([]);
     const [activeOrg, setActiveOrgState] = useState<Organization | null>(null);
@@ -55,6 +55,8 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
     const fetchOrgs = async (force = false) => {
+        if (authLoading) return; // Wait for auth to settle
+        
         if (!user?.uid) { 
             setLoading(false); 
             return; 
@@ -72,9 +74,7 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
                             setActiveOrgState(data[0]);
                             setActiveGroupState(data[0].groups?.[0] ?? null);
                         }
-                        // Even with cache, we set loading to false AFTER setting state
                         setLoading(false);
-                        // We still fetch in background to stay fresh
                     }
                 } catch (e) {
                     localStorage.removeItem(CACHE_KEY);
@@ -83,21 +83,17 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
         }
 
         try {
-            // Only show full loading if no cache or force refresh
             if (!localStorage.getItem(CACHE_KEY) || force) setLoading(true);
             const orgs: Organization[] = await api.listOrganizations(user.uid);
             setOrganizations(orgs);
             
-            // Sync active items if they changed or were not set
             if (orgs.length > 0) {
                 setActiveOrgState(prev => {
                     const found = orgs.find(o => o.id === prev?.id);
                     return found || orgs[0] || null;
                 });
-                // Note: group sync is trickier, keeping it simple for now
             }
 
-            // 2. Save to Cache
             localStorage.setItem(CACHE_KEY, JSON.stringify({
                 data: orgs,
                 timestamp: Date.now()
@@ -110,8 +106,12 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
     };
 
     useEffect(() => {
-        fetchOrgs();
-    }, [user?.uid]);
+        if (!authLoading) {
+            fetchOrgs();
+        } else {
+            setLoading(true);
+        }
+    }, [user?.uid, authLoading]);
 
     function setActiveOrg(org: Organization) {
         setActiveOrgState(org);
