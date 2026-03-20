@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 // SWC native binary is incompatible on this system → Babel fallback via .babelrc
 const nextConfig: NextConfig = {
+  output: "standalone",
   eslint: {
     ignoreDuringBuilds: true,
   },

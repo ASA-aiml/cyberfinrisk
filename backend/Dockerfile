@@ -2,6 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Non-root user setup
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
@@ -12,7 +15,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY --chown=appuser:appuser . .
+
+# Use the non-root user
+USER appuser
 
 # Expose the API port
 EXPOSE 8000

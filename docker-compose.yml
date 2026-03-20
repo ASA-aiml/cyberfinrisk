@@ -33,6 +33,8 @@ services:
     container_name: frontend
     ports:
       - "3000:3000"
+    env_file:
+      - ./frontend/.env.local
     environment:
       - NODE_ENV=production
     networks:
@@ -41,10 +43,12 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: ../backend/Dockerfile # Assuming a Dockerfile exists or will be created
+      dockerfile: Dockerfile
     container_name: backend
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     networks:
