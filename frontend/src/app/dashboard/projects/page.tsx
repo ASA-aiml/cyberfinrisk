@@ -13,7 +13,10 @@ import {
     ChevronUp,
     Loader2,
     Lock,
-    Globe
+    Globe,
+    Wand2,
+    CheckCircle2,
+    AlertTriangle
 } from "lucide-react";
 import TopBar from "@/components/dashboard/TopBar";
 import { useOrg } from "@/context/OrgContext";
@@ -21,6 +24,90 @@ import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { Project, ProjectDetail } from "@/lib/types";
 import { fmtMoney } from "@/lib/utils";
+
+// ── AI Solve Panel ──────────────────────────────────────────────────────────────
+
+type SolveResult = {
+    fix_summary: string;
+    fix_code: string;
+    explanation: string;
+    fix_complexity: string;
+    additional_steps: string;
+};
+
+function AISolvePanel({ projectId, vulnId }: { projectId: string; vulnId: string }) {
+    const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+    const [result, setResult] = useState<SolveResult | null>(null);
+    const [error, setError] = useState("");
+    const [open, setOpen] = useState(false);
+
+    async function handleSolve(e: React.MouseEvent) {
+        e.stopPropagation();
+        setState("loading");
+        setOpen(true);
+        setError("");
+        try {
+            const data = await api.solveVulnerability(projectId, vulnId);
+            setResult(data);
+            setState("done");
+        } catch (err: any) {
+            setError(err.message || "AI solve failed");
+            setState("error");
+        }
+    }
+
+    return (
+        <div className="mt-1" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+                {state === "idle" && (
+                    <button
+                        onClick={handleSolve}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-md transition-all hover:opacity-90 active:scale-95"
+                        style={{ background: "linear-gradient(135deg,#7c3aed,#4f46e5)", color: "#fff" }}
+                    >
+                        <Wand2 size={10} /> AI Solve
+                    </button>
+                )}
+                {state === "loading" && (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md" style={{ background: "rgba(124,58,237,0.15)", color: "#a78bfa" }}>
+                        <Loader2 size={10} className="animate-spin" /> Analyzing…
+                    </span>
+                )}
+                {(state === "done" || state === "error") && (
+                    <button
+                        onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-md transition-all"
+                        style={{
+                            background: state === "done" ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+                            color: state === "done" ? "#22c55e" : "#ef4444"
+                        }}
+                    >
+                        {state === "done" ? <CheckCircle2 size={10} /> : <AlertTriangle size={10} />}
+                        {state === "done" ? "Fix ready" : "Error"}
+                        {open ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+                    </button>
+                )}
+            </div>
+            {open && state === "done" && result && (
+                <div className="mt-2 rounded-lg p-3 space-y-2" style={{ background: "rgba(124,58,237,0.08)", border: "1px solid rgba(124,58,237,0.25)" }}>
+                    <p className="text-[11px] font-semibold" style={{ color: "#c4b5fd" }}>{result.fix_summary}</p>
+                    <p className="text-[11px] leading-relaxed" style={{ color: "#a1a1aa" }}>{result.explanation}</p>
+                    {result.fix_code && (
+                        <pre className="text-[10px] rounded p-2 overflow-x-auto leading-relaxed" style={{ background: "rgba(0,0,0,0.5)", color: "#e2e8f0", border: "1px solid rgba(124,58,237,0.2)" }}>{result.fix_code}</pre>
+                    )}
+                    {result.additional_steps && (
+                        <p className="text-[10px] px-2 py-1 rounded" style={{ background: "rgba(234,179,8,0.08)", color: "#fbbf24" }}>
+                            <strong>Note:</strong> {result.additional_steps}
+                        </p>
+                    )}
+                </div>
+            )}
+            {open && state === "error" && (
+                <div className="mt-2 rounded-lg p-2 text-[10px]" style={{ background: "rgba(239,68,68,0.08)", color: "#f87171" }}>{error}</div>
+            )}
+        </div>
+    );
+}
 
 // ── Components ──────────────────────────────────────────────────────────────
 
@@ -51,6 +138,7 @@ export default function ProjectsPage() {
     const [loading, setLoading] = useState(true);
     const [scanningAll, setScanningAll] = useState(false);
     const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+    const [expandedVulnId, setExpandedVulnId] = useState<string | null>(null);
     const [projectDetails, setProjectDetails] = useState<Record<string, ProjectDetail>>({});
     const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
     const [searchTerm, setSearchTerm] = useState("");
@@ -289,14 +377,31 @@ export default function ProjectsPage() {
                                                                             </tr>
                                                                         </thead>
                                                                         <tbody className="divide-y divide-zinc-800/50">
-                                                                            {detail.scan_results.slice(0, 10).map((v, i) => (
-                                                                                <tr key={i} className="group hover:bg-white/5 transition-colors">
-                                                                                    <td className="py-3 font-medium text-zinc-300 group-hover:text-white capitalize">{v.bug_type.replace(/_/g, " ")}</td>
-                                                                                    <td className="py-3 font-mono text-[11px] text-zinc-500">{v.file.split("/").pop()}:{v.line}</td>
-                                                                                    <td className="py-3"><SevBadge sev={v.severity} /></td>
-                                                                                    <td className="py-3 text-right font-bold text-[var(--accent)]">{fmtMoney(v.expected_loss)}</td>
-                                                                                </tr>
-                                                                            ))}
+                                                                             {detail.scan_results.slice(0, 10).map((v) => (
+                                                                                 <React.Fragment key={v.vulnerability_id}>
+                                                                                     <tr
+                                                                                         className="group hover:bg-white/5 transition-colors cursor-pointer"
+                                                                                         onClick={() => setExpandedVulnId(expandedVulnId === v.vulnerability_id ? null : v.vulnerability_id)}
+                                                                                     >
+                                                                                         <td className="py-3 font-medium text-zinc-300 group-hover:text-white capitalize">
+                                                                                             <div className="flex items-center gap-1.5">
+                                                                                                 {expandedVulnId === v.vulnerability_id ? <ChevronUp size={10} className="text-zinc-500" /> : <ChevronDown size={10} className="text-zinc-500" />}
+                                                                                                 {v.bug_type.replace(/_/g, " ")}
+                                                                                             </div>
+                                                                                         </td>
+                                                                                         <td className="py-3 font-mono text-[11px] text-zinc-500">{v.file.split("/").pop()}:{v.line}</td>
+                                                                                         <td className="py-3"><SevBadge sev={v.severity} /></td>
+                                                                                         <td className="py-3 text-right font-bold text-[var(--accent)]">{fmtMoney(v.expected_loss)}</td>
+                                                                                     </tr>
+                                                                                     {expandedVulnId === v.vulnerability_id && (
+                                                                                         <tr>
+                                                                                             <td colSpan={4} className="py-2 px-2">
+                                                                                                 <AISolvePanel projectId={project.id} vulnId={v.vulnerability_id} />
+                                                                                             </td>
+                                                                                         </tr>
+                                                                                     )}
+                                                                                 </React.Fragment>
+                                                                             ))}
                                                                         </tbody>
                                                                     </table>
                                                                     {detail.scan_results.length > 10 && (

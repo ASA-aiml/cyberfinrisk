@@ -278,4 +278,21 @@ export const api = {
             body: JSON.stringify(payload)
         });
     },
+
+    async solveVulnerability(project_id: string, vulnerability_id: string): Promise<{
+        vulnerability_id: string;
+        bug_type: string;
+        file: string;
+        line: number;
+        fix_summary: string;
+        fix_code: string;
+        explanation: string;
+        fix_complexity: string;
+        additional_steps: string;
+    }> {
+        return fetchAPI(`/api/projects/${project_id}/solve`, {
+            method: "POST",
+            body: JSON.stringify({ vulnerability_id }),
+        });
+    },
 };

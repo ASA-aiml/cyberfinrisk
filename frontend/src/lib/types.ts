@@ -44,6 +44,8 @@ export interface VulnerabilityResult {
     line: number;
     severity: string;
     exposure: string;
+    code_context: string;          // actual code lines around the vulnerability
+    message: string;               // scanner's description of the issue
     expected_loss: number;
     total_impact: number;
     fix_cost_usd: number;
