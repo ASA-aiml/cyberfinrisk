@@ -73,7 +73,7 @@ export default function LandingPage() {
         </div>
         <div className="flex items-center gap-3">
           <Link
-            href="/dashboard"
+            href="/login"
             className="text-sm px-4 py-1.5 rounded-lg transition-colors font-medium"
             style={{ color: "var(--muted-foreground)" }}
           >
@@ -125,7 +125,7 @@ export default function LandingPage() {
             Get Started Free <ArrowRight size={16} />
           </Link>
           <Link
-            href="/dashboard"
+            href="/login"
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg font-semibold text-base transition-all hover:opacity-80"
             style={{ border: "1px solid var(--border)", color: "var(--foreground)" }}
           >
