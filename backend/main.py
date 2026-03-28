@@ -74,22 +74,17 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
+# Instrument the app for Prometheus (added first, executes LAST)
+Instrumentator().instrument(app).expose(app)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
-
-# Instrument the app for Prometheus
-Instrumentator().instrument(app).expose(app)
 
 # Serve frontend
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
