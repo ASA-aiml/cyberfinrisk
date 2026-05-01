@@ -1,118 +1,208 @@
-# FinRisk: Vulnerability Financial Impact Engine (VFIE)
+# 🔐 CyberFinRisk: Vulnerability Financial Impact Engine (VFIE)
 
+## 📌 Overview
 
+**CyberFinRisk** is an advanced **cybersecurity risk quantification platform** that transforms technical vulnerability findings into **financial risk insights**.
 
-## **FinRisk Project Summary**
+Instead of prioritizing vulnerabilities purely by severity (e.g., CVSS), CyberFinRisk enables organizations to answer:
 
-**Objective:**
-FinRisk is a **cyber risk quantification system** that translates software vulnerability findings into **financial risk estimates**, helping organizations prioritize remediation based on potential economic impact rather than raw technical severity.
+> “What is the financial impact if this vulnerability is exploited?”
 
-**Key Features:**
+This allows engineering and security teams to make **data-driven, business-aligned remediation decisions**.
 
-1. **Vulnerability Detection & Normalization**
+---
 
-   * Integrates multiple security scanners (static analysis, dependency scanning).
-   * Normalizes vulnerabilities into a standard taxonomy (e.g., SQL_INJECTION, XSS, IDOR).
-   * Deduplicates findings and filters non-production files.
+## 🎯 Core Objective
 
-2. **Contextual Exploitability Analysis**
+Bridge the gap between:
 
-   * Uses AI models to analyze surrounding code for exploitability signals.
-   * Adjusts baseline exploit probabilities based on authentication, data exposure, and input sanitization.
+* **Technical Security Findings** (e.g., SQL Injection, XSS)
+* **Business Risk Impact** (e.g., revenue loss, regulatory fines)
 
-3. **Financial Impact Modeling**
+By converting vulnerabilities into **Expected Financial Loss**, CyberFinRisk helps prioritize what truly matters.
 
-   * Calculates expected loss if a vulnerability is exploited, across categories like:
+---
 
-     * **Data breach costs** (records exposed × cost per record)
-     * **Regulatory penalties** (e.g., GDPR, PCI DSS, HIPAA fines)
-     * **Incident response costs**
-     * **Operational downtime**
-     * **Reputation damage / customer churn**
+## ⚙️ How It Works
 
-4. **Attack Chain Modeling**
+CyberFinRisk operates in a multi-stage pipeline:
 
-   * Identifies linked vulnerabilities to prevent double-counting of financial risk.
+### 1. 🔍 Vulnerability Detection & Normalization
 
-5. **Remediation Cost & ROI**
+* Integrates with tools like **Semgrep**
+* Detects:
 
-   * Estimates developer effort and cost to fix vulnerabilities.
-   * Calculates **remediation ROI** = expected loss ÷ fix cost, prioritizing high-impact fixes.
+  * Static code vulnerabilities
+  * Dependency risks
+* Normalizes findings into a unified taxonomy:
 
-6. **LLM-Powered Remediation Suggestions**
+  * `SQL_INJECTION`
+  * `XSS`
+  * `IDOR`
+* Removes duplicates and ignores non-production files
 
-   * Uses Large Language Models to generate secure, context-aware code fixes.
-   * Provides developer-friendly explanations and example patches for each vulnerability.
-   * Includes safety validation to ensure suggestions are practical.
+---
 
-7. **Executive Risk Reporting**
+### 2. 🧠 Contextual Exploitability Analysis
 
-   * Generates business-focused reports with total financial exposure, prioritized vulnerabilities, attack scenarios, and remediation guidance.
+* Uses AI models (e.g., Gemini) to analyze:
 
-**Inputs Required:**
+  * Authentication presence
+  * Input sanitization
+  * Data exposure level
+* Adjusts **probability of exploit** dynamically
 
-* Organizational data: revenue, user count, regulatory obligations, sensitive data types.
-* Infrastructure context: system type, exposure, operational costs, data volume.
+---
 
-**Limitations:**
+### 3. 💰 Financial Impact Modeling
 
-* Estimates are probabilistic, based on heuristics and AI analysis.
-* User-supplied organizational context may be approximate.
-* Actual financial losses and breach impacts may vary.
+Each vulnerability is evaluated across multiple cost dimensions:
 
-**Future Enhancements:**
+#### 📊 Components of Financial Impact
 
-* Automated data volume estimation, database schema integration, historical breach calibration, and integration with enterprise risk management systems.
+* **Data Breach Costs**
 
-**Overall:**
-FinRisk bridges the gap between **technical vulnerability detection** and **business-level risk management**, enabling organizations to make informed, financially-driven decisions about cybersecurity remediation.
+  * `records_exposed × cost_per_record`
 
+* **Regulatory Penalties**
+
+  * GDPR, PCI DSS, HIPAA, etc.
+
+* **Incident Response**
+
+  * Forensics, containment, recovery
+
+* **Operational Downtime**
+
+  * Revenue loss during outages
+
+* **Reputation Damage**
+
+  * Customer churn × ARPU
+
+---
+
+### 4. 🔗 Attack Chain Modeling
+
+* Detects related vulnerabilities
+* Prevents **double-counting of financial risk**
+* Models real-world exploit paths
+
+---
+
+### 5. 📈 Expected Loss Calculation
+
+Core formula:
+
+```
+Expected Loss (EL) = Probability of Exploit × Total Financial Impact
+```
+
+This becomes the **primary prioritization metric**.
+
+---
+
+### 6. 🛠 Remediation Cost & ROI
+
+* Estimates:
+
+  * Developer effort (hours)
+  * Cost of fixing vulnerabilities
+
+* Calculates:
+
+```
+Remediation ROI = Expected Loss ÷ Fix Cost
+```
+
+➡️ Helps teams fix **high-impact, low-cost vulnerabilities first**
+
+---
+
+### 7. 🤖 AI-Powered Remediation
+
+* Generates:
+
+  * Secure code fixes
+  * Context-aware patches
+  * Developer-friendly explanations
+
+* Ensures:
+
+  * Practicality
+  * Security best practices
+
+---
+
+### 8. 📊 Executive Risk Reporting
+
+Produces business-level insights:
+
+* Total financial exposure
+* Top risk vulnerabilities
+* Attack scenarios
+* ROI-driven remediation plan
 
 ---
 
 ## 🚀 Key Features
 
-* **Automated Scanning**: Clones and scans GitHub repositories using Semgrep rulesets.
-* **Financial Risk Modeling**: Calculates **Expected Loss (EL)**:
-  `EL = Probability of Exploit × Total Financial Impact`
-* **Comprehensive Impact Analysis**:
-
-  * Data Breach (Industry-adjusted cost per record)
-  * Incident Response
-  * Operational Downtime
-  * Regulatory Penalties (GDPR, PCI DSS, HIPAA, etc.)
-  * Reputational Damage (Churn-based)
-* **AI-Powered Insights**: Integrates Google Gemini for exploitability validation and contextual remediation guidance.
-* **ROI Ranking**: Prioritizes vulnerabilities by expected loss per engineering hour.
-* **Business Briefings**: Generates executive summaries and plain-English reports for management.
+* ✅ Automated GitHub repository scanning
+* ✅ AI-driven exploitability validation
+* ✅ Financial risk quantification (Expected Loss)
+* ✅ Multi-factor impact analysis
+* ✅ ROI-based prioritization
+* ✅ Executive-ready reports
+* ✅ Developer-friendly remediation guidance
 
 ---
 
-## 🛠 Tech Stack
+## 🧰 Tech Stack
 
-* **Frontend**: Next.js, React, TailwindCSS (optional)
-* **Backend**: Python 3.11+, FastAPI
-* **Analysis Engine**: Semgrep CLI
-* **AI Integration**: Google Gemini (Generative AI)
-* **Data Models**: Pydantic
-* **Development Tools**: GitPython, Uvicorn
+### Frontend
+
+* Next.js
+* React
+* TailwindCSS (optional)
+
+### Backend
+
+* Python 3.11+
+* FastAPI
+
+### Analysis Engine
+
+* Semgrep CLI
+
+### AI Integration
+
+* Google Gemini
+
+### Data Modeling
+
+* Pydantic
+
+### Dev Tools
+
+* GitPython
+* Uvicorn
 
 ---
 
 ## 📂 Project Structure
 
 ```
-finrisk/
+cyberfinrisk/
 ├── frontend/             # Next.js frontend
 │   ├── package.json
 │   ├── pages/
 │   └── public/
 ├── backend/              # FastAPI backend
 │   ├── main.py
-│   ├── engine/           # Core scanning and risk logic
-│   ├── models/           # Pydantic models
-│   └── knowledge_base/   # JSON benchmarks for probability & costs
-├── Doc/                  # Documentation (Architecture, API, Engine)
+│   ├── engine/           # Core risk + scanning logic
+│   ├── models/           # Pydantic schemas
+│   └── knowledge_base/   # Risk benchmarks (JSON)
+├── docs/                 # Documentation
 ├── LICENSE
 └── README.md
 ```
@@ -124,99 +214,90 @@ finrisk/
 ### Frontend
 
 * Node.js 18+
-* npm or yarn
+* npm / yarn
 
 ### Backend
 
 * Python 3.11+
-* Semgrep CLI (`pip install semgrep`)
-* Gemini API Key (optional for advanced AI analysis)
+* Semgrep (`pip install semgrep`)
+* Gemini API Key (optional)
 
 ---
 
 ## 📥 Installation & Setup
 
-### Backend Setup
-
-1. Clone the repository:
+### 🔧 Backend Setup
 
 ```bash
 git clone https://github.com/shadil-rayyan/finrisk.git
-cd finrisk/backend
+cd cyberfinrisk/backend
 ```
-
-2. Create and activate a virtual environment:
 
 ```bash
 python -m venv venv
 source venv/bin/activate      # Windows: venv\Scripts\activate
 ```
 
-3. Install dependencies:
-
 ```bash
 pip install -r requirements.txt
 ```
 
-4. Configure environment variables:
+Create `.env` file:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=your_api_key_here
 ```
+
+Run server:
+
+```bash
+uvicorn main:app --reload
+```
+
+➡️ API available at: `http://localhost:8000`
 
 ---
 
-### Frontend Setup
-
-1. Navigate to the frontend directory:
+### 🎨 Frontend Setup
 
 ```bash
 cd ../frontend
-```
-
-2. Install dependencies:
-
-```bash
 npm install
-# or
-yarn install
-```
-
-3. Start the development server:
-
-```bash
 npm run dev
-# or
-yarn dev
 ```
 
-4. The frontend is accessible at: `http://localhost:3000` (default Next.js port)
+➡️ App runs at: `http://localhost:3000`
 
 ---
 
 ## 🚀 Usage
 
-### Backend Server
-
-Start the FastAPI server:
-
-```bash
-cd backend
-uvicorn main:app --reload
-```
-
-API will be available at `http://localhost:8000`.
-
 ### API Endpoints
 
-* **`POST /scan-repo`**: Scan a GitHub repository.
-  **Required**: `repo_url`, `company` context.
+#### `POST /scan-repo`
 
-* **`POST /analyze-manual`**: Analyze specific vulnerability data manually.
+Scan a GitHub repository
 
-* **`GET /health`**: Check system health.
+**Input:**
 
-### Example Request Body (Company Context)
+* `repo_url`
+* `company` context
+
+---
+
+#### `POST /analyze-manual`
+
+Analyze manually provided vulnerabilities
+
+---
+
+#### `GET /health`
+
+Check system status
+
+---
+
+### 🧾 Example Company Context
 
 ```json
 {
@@ -234,4 +315,56 @@ API will be available at `http://localhost:8000`.
   "company_size": "mid_size"
 }
 ```
+
+---
+
+## ☁️ Deployment
+
+### Frontend
+
+* Vercel
+* Netlify
+
+### Backend
+
+* Render
+* Railway
+* AWS / GCP / Azure (optional)
+
+---
+
+## ⚠️ Limitations
+
+* Financial estimates are probabilistic
+* Depends on input accuracy
+* AI-based exploitability is heuristic-driven
+* Real-world breach costs may vary
+
+---
+
+## 🔮 Future Enhancements
+
+* Automated data volume detection
+* Database schema integration
+* Historical breach calibration
+* Enterprise risk system integration
+* Real-time monitoring & alerts
+
+---
+
+## 💡 Why CyberFinRisk?
+
+Traditional tools answer:
+
+> “How severe is this vulnerability?”
+
+CyberFinRisk answers:
+
+> “How much money could this vulnerability cost us?”
+
+That shift enables:
+
+* Better prioritization
+* Business alignment
+* Faster decision-making
 
