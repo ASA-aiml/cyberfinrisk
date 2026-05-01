@@ -11,3 +11,5 @@ vfie/data/risk_results.json
 # IDE
 .vscode/
 .idea/
+
+data/risk_results.json         

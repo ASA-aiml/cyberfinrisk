@@ -89,27 +89,42 @@ def clone_repo(repo_url: str, branch: str = "main") -> str:
 def run_semgrep(repo_path: str) -> List[Dict]:
     import time
     t0 = time.time()
-    result = subprocess.run(
-        [
-            "semgrep",
-            "--config", "p/owasp-top-ten",  # Focused: 1 ruleset instead of 2 = 2x faster
-            "--json",
-            "--quiet",
-            "--jobs", "4",                  # Parallel workers
-            "--max-target-bytes", "500000", # Skip files > 500KB (vendor, minified)
-            "--timeout", "10",              # 10s cap per file
-            "--timeout-threshold", "3",     # Skip rule after 3 timeouts
-            repo_path
-        ],
-        capture_output=True, text=True, timeout=300
-    )
-    elapsed = time.time() - t0
     try:
-        findings = json.loads(result.stdout).get("results", [])
-        print(f"[perf] Semgrep: {len(findings)} findings in {elapsed:.1f}s")
-        return findings
-    except:
-        print(f"[perf] Semgrep: parse failed after {elapsed:.1f}s — stdout: {result.stdout[:200]}")
+        result = subprocess.run(
+            [
+                "semgrep",
+                "--config", "p/owasp-top-ten",  # Focused: 1 ruleset instead of 2 = 2x faster
+                "--json",
+                "--quiet",
+                "--jobs", "2",                  # Reduced workers for low-memory servers
+                "--max-target-bytes", "500000", # Skip files > 500KB (vendor, minified)
+                "--timeout", "10",              # 10s cap per file
+                "--timeout-threshold", "3",     # Skip rule after 3 timeouts
+                repo_path
+            ],
+            capture_output=True, text=True, timeout=300
+        )
+        elapsed = time.time() - t0
+        if result.returncode != 0:
+            print(f"[scanner] Semgrep exited with code {result.returncode} after {elapsed:.1f}s")
+            print(f"[scanner] Semgrep stderr: {result.stderr[:500]}")
+        try:
+            findings = json.loads(result.stdout).get("results", [])
+            print(f"[perf] Semgrep: {len(findings)} findings in {elapsed:.1f}s")
+            return findings
+        except Exception:
+            print(f"[scanner] Semgrep: JSON parse failed after {elapsed:.1f}s")
+            print(f"[scanner] Semgrep stdout (first 500 chars): {result.stdout[:500]}")
+            print(f"[scanner] Semgrep stderr (first 500 chars): {result.stderr[:500]}")
+            return []
+    except FileNotFoundError:
+        print(f"[scanner] ERROR: 'semgrep' binary not found. Install with: pip install semgrep")
+        return []
+    except subprocess.TimeoutExpired:
+        print(f"[scanner] ERROR: Semgrep timed out after 300s")
+        return []
+    except Exception as e:
+        print(f"[scanner] ERROR: Semgrep failed unexpectedly: {e}")
         return []
 
 def read_code_context(file_path: str, line: int, context_lines: int = 40) -> str:
@@ -200,10 +215,21 @@ def run_trivy(repo_path: str) -> Dict:
             capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0 and not result.stdout:
+            print(f"[scanner] Trivy exited with code {result.returncode}")
+            print(f"[scanner] Trivy stderr: {result.stderr[:500]}")
             return {}
-        return json.loads(result.stdout)
+        data = json.loads(result.stdout)
+        total = sum(len(r.get('Vulnerabilities', [])) + len(r.get('Misconfigurations', [])) for r in data.get('Results', []))
+        print(f"[perf] Trivy: {total} findings from {len(data.get('Results', []))} targets")
+        return data
+    except FileNotFoundError:
+        print(f"[scanner] ERROR: '{trivy_bin}' binary not found. Install Trivy: https://aquasecurity.github.io/trivy")
+        return {}
+    except subprocess.TimeoutExpired:
+        print(f"[scanner] ERROR: Trivy timed out after 300s")
+        return {}
     except Exception as e:
-        print(f"Trivy scan failed: {e}")
+        print(f"[scanner] ERROR: Trivy scan failed: {e}")
         return {}
 
 

@@ -5,9 +5,11 @@ WORKDIR /app
 # Non-root user setup
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Install system dependencies
+# Install system dependencies + Trivy
 RUN apt-get update && apt-get install -y \
     git \
+    curl \
+    && curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
@@ -16,6 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY --chown=appuser:appuser . .
+
+# Limit Semgrep memory to avoid OOM on low-memory servers (Render free = 512MB)
+ENV SEMGREP_MAX_MEMORY=256
 
 # Use the non-root user
 USER appuser
