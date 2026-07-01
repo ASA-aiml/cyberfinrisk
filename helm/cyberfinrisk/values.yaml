@@ -30,10 +30,20 @@ postgresql:
   port: 5432
   database: "cyberfinrisk"
   user: "app"
-  password: ""  # set via --set or external secrets
+  password: ""
 
 gemini:
-  apiKey: ""  # set via --set or external secrets
+  apiKey: ""
+
+otel:
+  enabled: false
+  collectorVersion: "0.120.0"
+  collectorEndpoint: "http://otel-collector:4317"
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    release: "kube-prometheus-stack"
 
 resources:
   backend:

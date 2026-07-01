@@ -1,0 +1,22 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "cyberfinrisk.fullname" . }}-backend
+  labels:
+    app: cyberfinrisk
+    component: backend
+    release: {{ .Values.monitoring.serviceMonitor.release }}
+spec:
+  selector:
+    matchLabels:
+      app: cyberfinrisk
+      component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

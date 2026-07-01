@@ -28,5 +28,9 @@ USER appuser
 # Expose the API port
 EXPOSE 8000
 
+# Health check — /health is served by FastAPI (no auth, no DB)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl --fail http://localhost:8000/health || exit 1
+
 # Start the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
