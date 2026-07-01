@@ -1,0 +1,52 @@
+replicaCount: 1
+
+image:
+  backend:
+    repository: ghcr.io/shadil-rayyan/cyberfinrisk-backend
+    tag: latest
+    pullPolicy: Always
+  frontend:
+    repository: ghcr.io/shadil-rayyan/cyberfinrisk-frontend
+    tag: latest
+    pullPolicy: Always
+
+service:
+  backend:
+    port: 8000
+  frontend:
+    port: 3000
+
+ingress:
+  enabled: true
+  host: cyberfinrisk.local
+  tls: {}
+
+mongodb:
+  uri: "mongodb://mongo:27017"
+  database: "cyberfinrisk"
+
+postgresql:
+  host: "postgres"
+  port: 5432
+  database: "cyberfinrisk"
+  user: "app"
+  password: ""  # set via --set or external secrets
+
+gemini:
+  apiKey: ""  # set via --set or external secrets
+
+resources:
+  backend:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  frontend:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi

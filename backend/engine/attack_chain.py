@@ -1,35 +1,30 @@
 import json
+import math
+
 import google.generativeai as genai
-from typing import List, Dict
-from models.risk_result import AttackChain, RiskResult
 from models.company import CompanyContext
+from models.risk_result import AttackChain, RiskResult
 
 
-def find_attack_chains(
-    results: List[RiskResult],
-    company: CompanyContext
-) -> List[AttackChain]:
-    """
-    Send all vulnerabilities to Gemini together.
-    Ask it to identify which ones could be chained into multi-step attack paths.
-    """
+def find_attack_chains(results: list[RiskResult], company: CompanyContext) -> list[AttackChain]:
     if len(results) < 2:
         return []
 
     model = genai.GenerativeModel("gemini-2.5-flash")
 
-    # Build vulnerability summary for Gemini
     vuln_summary = []
     for r in results:
-        vuln_summary.append({
-            "id":       r.vulnerability_id,
-            "type":     r.bug_type,
-            "file":     r.file,
-            "line":     r.line,
-            "exposure": r.exposure,
-            "gemini_context": r.gemini_analysis.business_context if r.gemini_analysis else "",
-            "exploitable": r.gemini_analysis.is_exploitable if r.gemini_analysis else True
-        })
+        vuln_summary.append(
+            {
+                "id": r.vulnerability_id,
+                "type": r.bug_type,
+                "file": r.file,
+                "line": r.line,
+                "exposure": r.exposure,
+                "gemini_context": r.gemini_analysis.business_context if r.gemini_analysis else "",
+                "exploitable": r.gemini_analysis.is_exploitable if r.gemini_analysis else True,
+            }
+        )
 
     prompt = f"""You are a senior penetration tester analyzing a set of vulnerabilities
 found in {company.company_name}'s codebase ({company.industry} company, {company.deployment_exposure} deployment).
@@ -80,40 +75,51 @@ Rules:
                 text = text[4:]
         data = json.loads(text)
 
+        amplifiers = {
+            "rce": 2.2,
+            "full_data_exfiltration": 2.0,
+            "privilege_escalation": 1.7,
+            "partial_data_access": 1.4,
+            "information_disclosure": 1.2,
+        }
+        severity_amplifiers = {"critical": 2.0, "high": 1.7, "medium": 1.3}
+
         chains = []
         for c in data.get("chains", []):
-            # Compute combined expected loss using tiered severity amplifiers
-            involved_results = [r for r in results if r.vulnerability_id in c["vulnerability_ids"]]
-            
-            # Severity-weighted amplifier instead of flat 1.5x
-            # Based on what the attack chain ultimately achieves
+            involved = [r for r in results if r.vulnerability_id in c["vulnerability_ids"]]
+            if not involved:
+                continue
+
             chain_endpoint = c.get("chain_endpoint", "partial_data_access")
             severity = c.get("combined_severity", "high")
-            
-            AMPLIFIERS = {
-                "rce":                  2.2,  # Full system control
-                "full_data_exfiltration": 2.0,  # All data stolen
-                "privilege_escalation":  1.7,  # Admin-level access gained
-                "partial_data_access":   1.4,  # Some data exposed
-                "information_disclosure": 1.2,  # Attacker gains info only
-            }
-            # Fallback from severity if endpoint not specified
-            SEVERITY_AMPLIFIERS = {"critical": 2.0, "high": 1.7, "medium": 1.3}
-            
-            amplifier = AMPLIFIERS.get(
-                chain_endpoint,
-                SEVERITY_AMPLIFIERS.get(severity, 1.5)
-            )
-            combined_loss = sum(r.expected_loss for r in involved_results) * amplifier
+            amplifier = amplifiers.get(chain_endpoint, severity_amplifiers.get(severity, 1.5))
 
-            chains.append(AttackChain(
-                chain_id=c["chain_id"],
-                vulnerability_ids=c["vulnerability_ids"],
-                chain_description=c["chain_description"],
-                combined_severity=c.get("combined_severity", "high"),
-                combined_expected_loss=round(combined_loss, 2),
-                chain_steps=c.get("steps", [])
-            ))
+            # Conditional probability chain:
+            # P(chain) = P(first) × P(second|first) × P(third|first&second) × ...
+            # Each subsequent vuln is easier because prior steps bypassed controls.
+            # Amplifier models the increased ease: step_prob = min(0.95, p × sqrt(amplifier))
+            total_impact_sum = sum(r.total_impact for r in involved)
+            chain_prob = involved[0].effective_probability
+            for r in involved[1:]:
+                step_boost = math.sqrt(amplifier)
+                conditional_p = min(0.95, r.effective_probability * step_boost)
+                chain_prob *= conditional_p
+
+            # Combined loss uses total_impact (not expected_loss) as base,
+            # then applies chain probability and endpoint amplifier.
+            # This avoids double-counting individual vuln probabilities.
+            combined_loss = total_impact_sum * amplifier * chain_prob
+
+            chains.append(
+                AttackChain(
+                    chain_id=c["chain_id"],
+                    vulnerability_ids=c["vulnerability_ids"],
+                    chain_description=c["chain_description"],
+                    combined_severity=c.get("combined_severity", "high"),
+                    combined_expected_loss=round(combined_loss, 2),
+                    chain_steps=c.get("steps", []),
+                )
+            )
         return chains
     except Exception as e:
         print(f"Attack chain analysis failed: {e}")

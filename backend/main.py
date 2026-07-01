@@ -1,62 +1,82 @@
-import json, os, shutil, uuid
-from datetime import datetime, timezone
-from pathlib import Path
+import json
+import os
 import re
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
+
 load_dotenv()
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Body
+from contextlib import asynccontextmanager
+
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from logging_config import setup_logging
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from contextlib import asynccontextmanager
-from logging_config import setup_logging
 
 # Initialize structured logging
 logger = setup_logging()
 
-from models.company import CompanyContext
-from models.risk_result import RiskResult, AttackChain
-from engine.scanner import clone_repo, run_semgrep, parse_semgrep_findings, run_trivy, parse_trivy_findings, _rmtree_windows_safe
-from engine.classifier import classify_bug, get_fix_effort, load_taxonomy
-from engine.probability_model import load_probabilities, get_probability
-from engine.impact_model import compute_total_impact
-from engine.criticality import get_asset_criticality
-from engine.expected_loss import (compute_expected_loss, compute_priority_score,
-                                   compute_fix_cost, compute_roi)
-from engine.ranker import rank_vulnerabilities
-from engine.gemini_analyzer import init_gemini, analyze_vulnerability
 from engine.attack_chain import find_attack_chains
 from engine.business_brief import generate_business_brief, generate_executive_summary
+from engine.classifier import classify_bug, get_fix_effort, load_taxonomy
+from engine.expected_loss import (
+    compute_fix_cost,
+    compute_priority_score,
+    compute_risk_score,
+    compute_roi,
+    monte_carlo_expected_loss,
+)
+from engine.gemini_analyzer import analyze_vulnerability, init_gemini
+from engine.impact_model import compute_regulatory_total, compute_total_impact
+from engine.probability_model import get_probability, load_probabilities
+from engine.ranker import rank_vulnerabilities
+from engine.scanner import (
+    _rmtree_windows_safe,
+    clone_repo,
+    parse_semgrep_findings,
+    parse_trivy_findings,
+    run_semgrep,
+    run_trivy,
+)
+from models.company import CompanyContext
+from models.db import (
+    Base,
+    Group,
+    GroupMember,
+    Notification,
+    Organization,
+    OrganizationMember,
+    OrgInvite,
+    PersonalAccessToken,
+    User,
+    close_mongo_connection,
+    connect_to_mongo,
+    get_mongo_db,
+    get_pg_db,
+    pg_engine,
+)
+from models.org_schemas import (
+    GroupCreate,
+    GroupResponse,
+    GroupUpdate,
+    MemberResponse,
+    NotificationResponse,
+    OrganizationCreate,
+    OrganizationResponse,
+    OrganizationUpdate,
+    OrgInviteCreate,
+    OrgInviteResponse,
+)
+from models.project_schemas import ProjectCreate, ProjectDetail, ProjectSave, ProjectSummary
+from models.risk_result import AttackChain, RiskResult
 from prometheus_fastapi_instrumentator import Instrumentator
 from utils.email_utils import send_invite_email
 
-from models.db import (
-    Base, 
-    pg_engine, 
-    get_pg_db, 
-    get_mongo_db,
-    connect_to_mongo, 
-    close_mongo_connection,
-    User,
-    PersonalAccessToken,
-    Organization,
-    OrganizationMember,
-    Group,
-    GroupMember,
-    OrgInvite,
-    Notification
-)
-from models.org_schemas import (
-    OrganizationCreate, OrganizationUpdate, OrganizationResponse,
-    GroupCreate, GroupUpdate, GroupResponse,
-    OrgInviteCreate, OrgInviteResponse,
-    MemberResponse,
-    NotificationResponse
-)
-from models.project_schemas import ProjectCreate, ProjectSave, ProjectSummary, ProjectDetail
 
 # Manage Startup and Shutdown events
 @asynccontextmanager
@@ -69,11 +89,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await close_mongo_connection()
 
-app = FastAPI(
-    title="Vulnerability Business Impact Engine", 
-    version="3.0.0",
-    lifespan=lifespan
-)
+
+app = FastAPI(title="Vulnerability Business Impact Engine", version="3.0.0", lifespan=lifespan)
 # Instrument the app for Prometheus (added first, executes LAST)
 Instrumentator().instrument(app).expose(app)
 
@@ -89,21 +106,24 @@ app.add_middleware(
 # Serve frontend
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
+
 @app.get("/")
 async def serve_ui():
     return FileResponse("frontend/index.html")
 
 
 class ManualScanRequest(BaseModel):
-    vulnerabilities: List[dict]
+    vulnerabilities: list[dict]
     company: CompanyContext
-    gemini_api_key: Optional[str] = None
+    gemini_api_key: str | None = None
+
 
 class ScanRequest(BaseModel):
     repo_url: str
     branch: str = "main"
     company: CompanyContext
-    gemini_api_key: Optional[str] = None
+    gemini_api_key: str | None = None
+
 
 class ReportPayload(BaseModel):
     to_email: str
@@ -112,12 +132,13 @@ class ReportPayload(BaseModel):
     total_expected_loss: float
     total_fix_cost: float
     vulnerability_count: int
-    top_risks: List[dict]
-    attack_chains: List[dict]
+    top_risks: list[dict]
+    attack_chains: list[dict]
+
 
 class AnalysisResponse(BaseModel):
-    results: List[RiskResult]
-    attack_chains: List[AttackChain]
+    results: list[RiskResult]
+    attack_chains: list[AttackChain]
     executive_summary: str
     total_expected_loss: float
     total_fix_cost: float
@@ -135,12 +156,11 @@ class PresetContext(BaseModel):
 
 
 def run_risk_engine(
-    findings: list,
-    company: CompanyContext,
-    gemini_api_key: Optional[str] = None
+    findings: list, company: CompanyContext, gemini_api_key: str | None = None
 ) -> tuple:
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from engine.epss_client import get_epss_scores_bulk
 
     t0 = time.time()
@@ -148,21 +168,18 @@ def run_risk_engine(
     if gemini_api_key:
         init_gemini(gemini_api_key)
 
-    taxonomy      = load_taxonomy()
+    taxonomy = load_taxonomy()
     probabilities = load_probabilities()
 
     # ── SPEEDUP 1: Bulk EPSS prefetch (1 HTTP call instead of N) ──────────────
-    all_cve_ids = [
-        (f.get("cve_id") or f.get("raw_rule_id", "")).upper()
-        for f in findings
-    ]
+    all_cve_ids = [(f.get("cve_id") or f.get("raw_rule_id", "")).upper() for f in findings]
     epss_cache = get_epss_scores_bulk(all_cve_ids)
-    logger.info(f"[perf] EPSS bulk: {len(epss_cache)} scores in {time.time()-t0:.2f}s")
+    logger.info(f"[perf] EPSS bulk: {len(epss_cache)} scores in {time.time() - t0:.2f}s")
 
     # ── Pre-compute per-finding metadata (no I/O, fast) ───────────────────────
     prepped = []
     for f in findings:
-        bug_type   = classify_bug(f.get("raw_rule_id", ""), f.get("message", ""))
+        bug_type = classify_bug(f.get("raw_rule_id", ""), f.get("message", ""))
         fix_effort = get_fix_effort(bug_type, taxonomy)
 
         asset = None
@@ -172,9 +189,14 @@ def run_risk_engine(
                     if path in f["file"]:
                         asset = ac
                         break
-                if asset: break
+                if asset:
+                    break
 
-        exposure = asset.exposure.upper() if asset else f.get("exposure", company.deployment_exposure.upper())
+        exposure = (
+            asset.exposure.upper()
+            if asset
+            else f.get("exposure", company.deployment_exposure.upper())
+        )
 
         cve_id = (f.get("cve_id") or f.get("raw_rule_id", "")).upper()
         epss_score = epss_cache.get(cve_id)
@@ -200,7 +222,7 @@ def run_risk_engine(
             exposure=exposure,
             company=company,
             baseline_probability=baseline_p,
-            asset=asset
+            asset=asset,
         )
         return args, result
 
@@ -217,7 +239,9 @@ def run_risk_engine(
             except Exception as e:
                 logger.warning(f"[perf] Gemini worker error: {e}")
 
-    logger.info(f"[perf] Parallel Gemini done: {len(prepped)} vulns in {time.time()-t_gemini:.2f}s")
+    logger.info(
+        f"[perf] Parallel Gemini done: {len(prepped)} vulns in {time.time() - t_gemini:.2f}s"
+    )
 
     # ── Assemble results in original order ────────────────────────────────────
     results = []
@@ -232,41 +256,64 @@ def run_risk_engine(
 
         if gemini_result:
             effective_p = gemini_result.adjusted_probability
-            if gemini_result.false_positive_likelihood == "high" and not gemini_result.is_exploitable:
+            if (
+                gemini_result.false_positive_likelihood == "high"
+                and not gemini_result.is_exploitable
+            ):
                 filtered_count += 1
                 continue
 
-
         breakdown, total_impact = compute_total_impact(company, bug_type, gemini_result, asset)
-        _, crit_multiplier, _  = get_asset_criticality(f["file"])
-        expected_loss  = compute_expected_loss(effective_p, total_impact) * crit_multiplier
+
+        # Monte Carlo: P50 as expected_loss, P90 for confidence
+        mc = monte_carlo_expected_loss(effective_p, total_impact)
+        expected_loss = mc["p50"]
+        expected_loss_p10 = mc["p10"]
+        expected_loss_p90 = mc["p90"]
+
         priority_score = compute_priority_score(expected_loss, fix_effort)
-        fix_cost       = compute_fix_cost(fix_effort, company.engineer_hourly_cost)
-        roi            = compute_roi(expected_loss, fix_cost)
+        fix_cost = compute_fix_cost(fix_effort, company.engineer_hourly_cost)
+        roi = compute_roi(expected_loss, fix_cost)
 
         result = RiskResult(
-            vulnerability_id       = f["id"],
-            bug_type               = bug_type,
-            file                   = f["file"],
-            line                   = f["line"],
-            severity               = f.get("severity", "medium"),
-            exposure               = exposure,
-            code_context           = f.get("code_context", ""),
-            message                = f.get("message", ""),
-            probability_of_exploit = baseline_p,
-            gemini_analysis        = gemini_result,
-            effective_probability  = effective_p,
-            impact_breakdown       = breakdown,
-            total_impact           = total_impact,
-            expected_loss          = expected_loss,
-            fix_effort_hours       = fix_effort,
-            fix_cost_usd           = fix_cost,
-            priority_score         = priority_score,
-            roi_of_fixing          = roi,
-            business_brief         = ""
+            vulnerability_id=f["id"],
+            bug_type=bug_type,
+            file=f["file"],
+            line=f["line"],
+            severity=f.get("severity", "medium"),
+            exposure=exposure,
+            code_context=f.get("code_context", ""),
+            message=f.get("message", ""),
+            probability_of_exploit=baseline_p,
+            gemini_analysis=gemini_result,
+            effective_probability=effective_p,
+            impact_breakdown=breakdown,
+            total_impact=total_impact,
+            expected_loss=expected_loss,
+            expected_loss_p10=expected_loss_p10,
+            expected_loss_p90=expected_loss_p90,
+            fix_effort_hours=fix_effort,
+            fix_cost_usd=fix_cost,
+            priority_score=priority_score,
+            roi_of_fixing=roi,
+            business_brief="",
         )
         result.business_brief = ""
         results.append(result)
+
+    # Compute risk scores (relative to max expected loss in this scan)
+    max_loss = max((r.expected_loss for r in results), default=0)
+    for r in results:
+        r.risk_score = compute_risk_score(r.expected_loss, max_loss)
+
+    # Cap regulatory penalties at project level (per-incident, not per-vuln)
+    reg_total = compute_regulatory_total(company)
+    reg_sum = sum(r.impact_breakdown.regulatory_penalty for r in results)
+    if reg_sum > reg_total and reg_sum > 0:
+        scale = reg_total / reg_sum
+        for r in results:
+            capped = round(r.impact_breakdown.regulatory_penalty * scale, 2)
+            r.impact_breakdown.regulatory_penalty = capped
 
     ranked = rank_vulnerabilities(results)
 
@@ -289,7 +336,9 @@ def run_risk_engine(
                         r.attack_chains = []
                     r.attack_chains.append(chain.chain_id)
 
-    logger.info(f"[perf] Total engine time: {time.time()-t0:.2f}s for {len(findings)} findings → {len(ranked)} results")
+    logger.info(
+        f"[perf] Total engine time: {time.time() - t0:.2f}s for {len(findings)} findings → {len(ranked)} results"
+    )
     return ranked, chains, filtered_count
 
 
@@ -324,7 +373,7 @@ def _load_demo_presets() -> list[PresetContext]:
         lines = prefix.splitlines()
         context_lines = lines[-30:] if len(lines) > 30 else lines
 
-        label = f"Preset {idx+1}"
+        label = f"Preset {idx + 1}"
         repo_url = ""
         branch = "main"
 
@@ -384,65 +433,109 @@ async def analyze_manual(req: ManualScanRequest):
         total_fix_cost=sum(r.fix_cost_usd for r in results),
         vulnerability_count=len(results),
         filtered_count=filtered,
-        gemini_enabled=bool(req.gemini_api_key)
+        gemini_enabled=bool(req.gemini_api_key),
     )
 
 
 @app.post("/scan-repo")
 async def scan_repo(req: ScanRequest):
-    from fastapi.responses import StreamingResponse
     import time
     from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi.responses import StreamingResponse
 
     async def scan_generator():
         repo_path = None
         try:
             t0 = time.time()
-            
+
             # Step 1: Clone
-            yield json.dumps({"status": "progress", "message": "Cloning repository...", "percent": 10}) + "\n"
+            yield (
+                json.dumps(
+                    {"status": "progress", "message": "Cloning repository...", "percent": 10}
+                )
+                + "\n"
+            )
             repo_path = clone_repo(req.repo_url, req.branch)
-            logger.info(f"[perf] Clone done in {time.time()-t0:.1f}s")
+            logger.info(f"[perf] Clone done in {time.time() - t0:.1f}s")
 
             # Step 2: Static Analysis
-            yield json.dumps({"status": "progress", "message": "Running Semgrep and Trivy scans...", "percent": 30}) + "\n"
+            yield (
+                json.dumps(
+                    {
+                        "status": "progress",
+                        "message": "Running Semgrep and Trivy scans...",
+                        "percent": 30,
+                    }
+                )
+                + "\n"
+            )
             t_scan = time.time()
             with ThreadPoolExecutor(max_workers=2) as ex:
                 f_semgrep = ex.submit(run_semgrep, repo_path)
-                f_trivy   = ex.submit(run_trivy, repo_path)
+                f_trivy = ex.submit(run_trivy, repo_path)
                 semgrep_raw = f_semgrep.result()
-                trivy_raw   = f_trivy.result()
+                trivy_raw = f_trivy.result()
 
-            semgrep_parsed  = parse_semgrep_findings(semgrep_raw, req.company.deployment_exposure, repo_path)
-            trivy_parsed    = parse_trivy_findings(trivy_raw, req.company.deployment_exposure, repo_path)
+            semgrep_parsed = parse_semgrep_findings(
+                semgrep_raw, req.company.deployment_exposure, repo_path
+            )
+            trivy_parsed = parse_trivy_findings(
+                trivy_raw, req.company.deployment_exposure, repo_path
+            )
             combined_parsed = semgrep_parsed + trivy_parsed
-            logger.info(f"[perf] Scanners done in {time.time()-t_scan:.1f}s — {len(combined_parsed)} findings")
+            logger.info(
+                f"[perf] Scanners done in {time.time() - t_scan:.1f}s — {len(combined_parsed)} findings"
+            )
 
             # Step 3: Risk Engine
-            yield json.dumps({"status": "progress", "message": f"Analyzing {len(combined_parsed)} findings with AI models...", "percent": 60}) + "\n"
-            results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
-            
+            yield (
+                json.dumps(
+                    {
+                        "status": "progress",
+                        "message": f"Analyzing {len(combined_parsed)} findings with AI models...",
+                        "percent": 60,
+                    }
+                )
+                + "\n"
+            )
+            results, chains, filtered = run_risk_engine(
+                combined_parsed, req.company, req.gemini_api_key
+            )
+
             # Step 4: Finalizing
-            yield json.dumps({"status": "progress", "message": "Applying financial metrics and ranking risks...", "percent": 90}) + "\n"
+            yield (
+                json.dumps(
+                    {
+                        "status": "progress",
+                        "message": "Applying financial metrics and ranking risks...",
+                        "percent": 90,
+                    }
+                )
+                + "\n"
+            )
             os.makedirs("data", exist_ok=True)
             with open("data/risk_results.json", "w") as f:
-                json.dump({"results": [r.dict() for r in results],
-                           "chains":  [c.dict() for c in chains]}, f, indent=2)
-            
+                json.dump(
+                    {"results": [r.dict() for r in results], "chains": [c.dict() for c in chains]},
+                    f,
+                    indent=2,
+                )
+
             summary = generate_executive_summary(results, req.company, chains)
-            logger.info(f"[perf] Total /scan-repo: {time.time()-t0:.1f}s")
+            logger.info(f"[perf] Total /scan-repo: {time.time() - t0:.1f}s")
 
             final_data = AnalysisResponse(
-                results=results, 
-                attack_chains=chains, 
+                results=results,
+                attack_chains=chains,
                 executive_summary=summary,
                 total_expected_loss=sum(r.expected_loss for r in results),
                 total_fix_cost=sum(r.fix_cost_usd for r in results),
                 vulnerability_count=len(results),
                 filtered_count=filtered,
-                gemini_enabled=bool(req.gemini_api_key)
+                gemini_enabled=bool(req.gemini_api_key),
             )
-            
+
             yield json.dumps({"status": "done", "data": final_data.dict()}) + "\n"
 
         except Exception as e:
@@ -455,8 +548,7 @@ async def scan_repo(req: ScanRequest):
     return StreamingResponse(scan_generator(), media_type="application/x-ndjson")
 
 
-
-@app.get("/demo-presets", response_model=List[PresetContext])
+@app.get("/demo-presets", response_model=list[PresetContext])
 async def list_demo_presets():
     """
     Return demo scan presets loaded from Doc/experiment_log/repo_json.md.
@@ -471,8 +563,9 @@ async def list_demo_presets():
 # Dashboard Metrics (aggregated from MongoDB)
 # ==========================================
 
+
 @app.get("/api/dashboard/metrics")
-async def dashboard_metrics(org_id: Optional[str] = None, group_id: Optional[str] = None):
+async def dashboard_metrics(org_id: str | None = None, group_id: str | None = None):
     """
     Aggregate real scan data across all projects for the dashboard.
     Returns metrics, severity breakdown, risk-by-type, and loss-over-time.
@@ -544,7 +637,7 @@ async def dashboard_metrics(org_id: Optional[str] = None, group_id: Optional[str
     # Sort loss_over_time by date
     loss_over_time = sorted(
         [{"date": k, "loss": round(v, 2)} for k, v in loss_by_date.items() if k != "unknown"],
-        key=lambda x: x["date"]
+        key=lambda x: x["date"],
     )
 
     # Extract repo name from last scan URL
@@ -554,9 +647,10 @@ async def dashboard_metrics(org_id: Optional[str] = None, group_id: Optional[str
     last_scan_display = "Never"
     if last_scan_at:
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
+
             scan_dt = datetime.fromisoformat(last_scan_at.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             diff = now - scan_dt
             if diff.days > 0:
                 last_scan_display = f"{diff.days}d ago"
@@ -607,93 +701,89 @@ def _empty_dashboard():
 async def health():
     return {"status": "ok", "version": "3.0.0"}
 
+
 # ==========================================
 # User Profile Endpoints
 # ==========================================
 
+
 class UserProfileUpdate(BaseModel):
-    full_name: Optional[str] = None
+    full_name: str | None = None
+
 
 class TokenCreate(BaseModel):
     name: str
-    token: Optional[str] = None  # If not provided, we generate one
+    token: str | None = None  # If not provided, we generate one
+
 
 @app.get("/api/user/{uuid}")
 async def get_user_profile(uuid: str, db: Session = Depends(get_pg_db)):
     user = db.query(User).filter(User.uuid == uuid).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    tokens = [{
-        "id": t.id,
-        "name": t.name,
-        "token": t.token,
-        "created_at": str(t.created_at)
-    } for t in user.tokens]
-    
-    return {
-        "uuid": user.uuid,
-        "email": user.email,
-        "full_name": user.full_name,
-        "tokens": tokens
-    }
+
+    tokens = [
+        {"id": t.id, "name": t.name, "token": t.token, "created_at": str(t.created_at)}
+        for t in user.tokens
+    ]
+
+    return {"uuid": user.uuid, "email": user.email, "full_name": user.full_name, "tokens": tokens}
+
 
 @app.post("/api/user")
 async def sync_user_profile(user_data: dict, db: Session = Depends(get_pg_db)):
     """Sync user on login (Firebase UUID)"""
     uuid = user_data.get("uuid")
     email = user_data.get("email")
-    
+
     if not uuid or not email:
         raise HTTPException(status_code=400, detail="UUID and Email required")
-        
+
     user = db.query(User).filter(User.uuid == uuid).first()
     if not user:
-        user = User(
-            uuid=uuid,
-            email=email,
-            full_name=user_data.get("full_name")
-        )
+        user = User(uuid=uuid, email=email, full_name=user_data.get("full_name"))
         db.add(user)
         db.commit()
     else:
         # Update email if changed or other basic fields from Gmail
         user.email = email
         if user_data.get("full_name") and not user.full_name:
-             user.full_name = user_data.get("full_name")
+            user.full_name = user_data.get("full_name")
         db.commit()
-        
+
     return {"status": "success", "user": {"uuid": user.uuid, "email": user.email}}
 
+
 @app.patch("/api/user/{uuid}")
-async def update_user_profile(uuid: str, update_data: UserProfileUpdate, db: Session = Depends(get_pg_db)):
+async def update_user_profile(
+    uuid: str, update_data: UserProfileUpdate, db: Session = Depends(get_pg_db)
+):
     user = db.query(User).filter(User.uuid == uuid).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     if update_data.full_name is not None:
         user.full_name = update_data.full_name
-        
+
     db.commit()
     return {"status": "success"}
+
 
 @app.post("/api/user/{uuid}/tokens")
 async def create_token(uuid: str, req: TokenCreate, db: Session = Depends(get_pg_db)):
     import secrets
+
     user = db.query(User).filter(User.uuid == uuid).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     token_val = req.token if req.token else f"fin_pat_{secrets.token_hex(16)}"
-    
-    new_token = PersonalAccessToken(
-        user_uuid=uuid,
-        name=req.name,
-        token=token_val
-    )
+
+    new_token = PersonalAccessToken(user_uuid=uuid, name=req.name, token=token_val)
     db.add(new_token)
     db.commit()
     return {"id": new_token.id, "name": new_token.name, "token": new_token.token}
+
 
 @app.delete("/api/user/tokens/{token_id}")
 async def delete_token(token_id: int, db: Session = Depends(get_pg_db)):
@@ -704,17 +794,25 @@ async def delete_token(token_id: int, db: Session = Depends(get_pg_db)):
     db.commit()
     return {"status": "success"}
 
+
 # ==========================================
 # Organization Endpoints
 # ==========================================
 
-@app.get("/api/orgs", response_model=List[OrganizationResponse])
-async def list_organizations(user_uuid: Optional[str] = None, db: Session = Depends(get_pg_db)):
+
+@app.get("/api/orgs", response_model=list[OrganizationResponse])
+async def list_organizations(user_uuid: str | None = None, db: Session = Depends(get_pg_db)):
     if user_uuid:
         # Get orgs where user is a member
-        orgs = db.query(Organization).join(OrganizationMember).filter(OrganizationMember.user_uuid == user_uuid).all()
+        orgs = (
+            db.query(Organization)
+            .join(OrganizationMember)
+            .filter(OrganizationMember.user_uuid == user_uuid)
+            .all()
+        )
         return orgs
     return db.query(Organization).all()
+
 
 @app.post("/api/orgs", response_model=OrganizationResponse)
 async def create_organization(req: OrganizationCreate, db: Session = Depends(get_pg_db)):
@@ -722,31 +820,27 @@ async def create_organization(req: OrganizationCreate, db: Session = Depends(get
     existing = db.query(Organization).filter(Organization.slug == req.slug).first()
     if existing:
         raise HTTPException(status_code=400, detail="Organization slug already taken")
-    
+
     # Create org
     new_org = Organization(
-        name=req.name,
-        slug=req.slug,
-        plan=req.plan,
-        creator_uuid=req.creator_uuid
+        name=req.name, slug=req.slug, plan=req.plan, creator_uuid=req.creator_uuid
     )
     db.add(new_org)
-    db.flush() # Get the ID
-    
+    db.flush()  # Get the ID
+
     # Add creator as admin member
-    membership = OrganizationMember(
-        org_id=new_org.id,
-        user_uuid=req.creator_uuid,
-        role="admin"
-    )
+    membership = OrganizationMember(org_id=new_org.id, user_uuid=req.creator_uuid, role="admin")
     db.add(membership)
     db.commit()
     db.refresh(new_org)
-    
+
     return new_org
 
+
 @app.patch("/api/orgs/{org_id}", response_model=OrganizationResponse)
-async def update_organization(org_id: str, req: OrganizationUpdate, db: Session = Depends(get_pg_db)):
+async def update_organization(
+    org_id: str, req: OrganizationUpdate, db: Session = Depends(get_pg_db)
+):
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -758,6 +852,7 @@ async def update_organization(org_id: str, req: OrganizationUpdate, db: Session 
     db.refresh(org)
     return org
 
+
 @app.delete("/api/orgs/{org_id}", status_code=204)
 async def delete_organization(org_id: str, db: Session = Depends(get_pg_db)):
     org = db.query(Organization).filter(Organization.id == org_id).first()
@@ -766,23 +861,26 @@ async def delete_organization(org_id: str, db: Session = Depends(get_pg_db)):
     db.delete(org)
     db.commit()
 
+
 # ==========================================
 # Group Endpoints
 # ==========================================
 
-@app.get("/api/orgs/{org_id}/groups", response_model=List[GroupResponse])
+
+@app.get("/api/orgs/{org_id}/groups", response_model=list[GroupResponse])
 async def list_groups(org_id: str, db: Session = Depends(get_pg_db)):
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     return org.groups
 
+
 @app.post("/api/orgs/{org_id}/groups", response_model=GroupResponse)
 async def create_group(org_id: str, req: GroupCreate, db: Session = Depends(get_pg_db)):
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     new_group = Group(
         name=req.name,
         description=req.description,
@@ -793,15 +891,12 @@ async def create_group(org_id: str, req: GroupCreate, db: Session = Depends(get_
     db.flush()
 
     # Add creator as admin of the group
-    membership = GroupMember(
-        group_id=new_group.id,
-        user_uuid=req.creator_uuid,
-        role="admin"
-    )
+    membership = GroupMember(group_id=new_group.id, user_uuid=req.creator_uuid, role="admin")
     db.add(membership)
     db.commit()
     db.refresh(new_group)
     return new_group
+
 
 @app.get("/api/groups/{group_id}", response_model=GroupResponse)
 async def get_group(group_id: str, db: Session = Depends(get_pg_db)):
@@ -809,6 +904,7 @@ async def get_group(group_id: str, db: Session = Depends(get_pg_db)):
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     return group
+
 
 @app.patch("/api/groups/{group_id}", response_model=GroupResponse)
 async def update_group(group_id: str, req: GroupUpdate, db: Session = Depends(get_pg_db)):
@@ -827,6 +923,7 @@ async def update_group(group_id: str, req: GroupUpdate, db: Session = Depends(ge
     db.refresh(group)
     return group
 
+
 @app.delete("/api/groups/{group_id}", status_code=204)
 async def delete_group(group_id: str, db: Session = Depends(get_pg_db)):
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -838,18 +935,24 @@ async def delete_group(group_id: str, db: Session = Depends(get_pg_db)):
 
 # ── Members API ────────────────────────────────────────────────────────────
 
-@app.get("/api/orgs/{org_id}/members", response_model=List[MemberResponse])
+
+@app.get("/api/orgs/{org_id}/members", response_model=list[MemberResponse])
 async def list_org_members(org_id: str, db: Session = Depends(get_pg_db)):
-    members = db.query(
-        OrganizationMember.id,
-        OrganizationMember.org_id,
-        OrganizationMember.user_uuid,
-        OrganizationMember.role,
-        OrganizationMember.joined_at,
-        User.email,
-        User.full_name
-    ).join(User, OrganizationMember.user_uuid == User.uuid).filter(OrganizationMember.org_id == org_id).all()
-    
+    members = (
+        db.query(
+            OrganizationMember.id,
+            OrganizationMember.org_id,
+            OrganizationMember.user_uuid,
+            OrganizationMember.role,
+            OrganizationMember.joined_at,
+            User.email,
+            User.full_name,
+        )
+        .join(User, OrganizationMember.user_uuid == User.uuid)
+        .filter(OrganizationMember.org_id == org_id)
+        .all()
+    )
+
     return [
         MemberResponse(
             id=m.id,
@@ -858,19 +961,21 @@ async def list_org_members(org_id: str, db: Session = Depends(get_pg_db)):
             role=m.role,
             joined_at=m.joined_at,
             email=m.email,
-            full_name=m.full_name
-        ) for m in members
+            full_name=m.full_name,
+        )
+        for m in members
     ]
 
 
 # ── Invites API ────────────────────────────────────────────────────────────
 
+
 @app.post("/api/orgs/{org_id}/invite", response_model=OrgInviteResponse)
 async def invite_member(
-    org_id: str, 
-    req: OrgInviteCreate, 
-    background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_pg_db)
+    org_id: str,
+    req: OrgInviteCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_pg_db),
 ):
     # 1. Create the invite with explicit token
     invite_token = str(uuid.uuid4())
@@ -879,10 +984,10 @@ async def invite_member(
         invited_email=req.invited_email,
         inviter_uuid=req.inviter_uuid,
         role=req.role,
-        token=invite_token
+        token=invite_token,
     )
     db.add(invite)
-    
+
     # 2. Fetch context for notification/email
     org = db.query(Organization).filter(Organization.id == org_id).first()
     inviter = db.query(User).filter(User.uuid == req.inviter_uuid).first()
@@ -897,71 +1002,71 @@ async def invite_member(
             type="invite",
             title="Team Invitation",
             body=f"You have been invited to join {org_name}.",
-            link=f"/dashboard/invites/{invite_token}"
+            link=f"/dashboard/invites/{invite_token}",
         )
         db.add(notif)
-    
+
     # 4. Dispatch Email in background
     background_tasks.add_task(
         send_invite_email,
         to_email=req.invited_email,
         org_name=org_name,
         invite_token=invite_token,
-        inviter_name=inviter_name
+        inviter_name=inviter_name,
     )
-    
+
     db.commit()
     db.refresh(invite)
     return invite
+
 
 @app.get("/api/invites/{token}")
 async def get_invite_details(token: str, db: Session = Depends(get_pg_db)):
     invite = db.query(OrgInvite).filter(OrgInvite.token == token).first()
     if not invite:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
+
     org = db.query(Organization).filter(Organization.id == invite.org_id).first()
     return {
         "org_name": org.name if org else "an organization",
         "invited_email": invite.invited_email,
         "status": invite.status,
-        "role": invite.role
+        "role": invite.role,
     }
 
+
 @app.post("/api/invites/{token}/accept")
-async def accept_invite(
-    token: str, 
-    user_uuid: str, 
-    db: Session = Depends(get_pg_db)
-):
+async def accept_invite(token: str, user_uuid: str, db: Session = Depends(get_pg_db)):
     # 1. Verify invite
     invite = db.query(OrgInvite).filter(OrgInvite.token == token).first()
     if not invite:
         raise HTTPException(status_code=404, detail="Invalid invitation token")
-    
+
     if invite.status == "accepted":
         # Check if this specific user is the one who accepted or is already a member
         org = db.query(Organization).filter(Organization.id == invite.org_id).first()
-        return {"message": "You are already a member", "org_name": org.name if org else "the organization"}
+        return {
+            "message": "You are already a member",
+            "org_name": org.name if org else "the organization",
+        }
 
     # 2. Add member
     # Check if already a member first (idempotency)
-    existing = db.query(OrganizationMember).filter(
-        OrganizationMember.org_id == invite.org_id, 
-        OrganizationMember.user_uuid == user_uuid
-    ).first()
-    
-    if not existing:
-        member = OrganizationMember(
-            org_id=invite.org_id,
-            user_uuid=user_uuid,
-            role=invite.role
+    existing = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.org_id == invite.org_id, OrganizationMember.user_uuid == user_uuid
         )
+        .first()
+    )
+
+    if not existing:
+        member = OrganizationMember(org_id=invite.org_id, user_uuid=user_uuid, role=invite.role)
         db.add(member)
-    
+
     # 3. Update invite status
     invite.status = "accepted"
-    
+
     # 4. Notify new member
     org = db.query(Organization).filter(Organization.id == invite.org_id).first()
     notif = Notification(
@@ -969,12 +1074,15 @@ async def accept_invite(
         type="info",
         title="Welcome!",
         body=f"You are now a member of {org.name if org else 'the organization'}.",
-        link="/dashboard"
+        link="/dashboard",
     )
     db.add(notif)
-    
+
     db.commit()
-    return {"message": "Successfully joined organization", "org_name": org.name if org else "the organization"}
+    return {
+        "message": "Successfully joined organization",
+        "org_name": org.name if org else "the organization",
+    }
 
 
 # ── Notifications API ───────────────────────────────────────────────────────
@@ -982,9 +1090,16 @@ async def accept_invite(
 
 # ── Notifications API ───────────────────────────────────────────────────────
 
-@app.get("/api/notifications/{user_uuid}", response_model=List[NotificationResponse])
+
+@app.get("/api/notifications/{user_uuid}", response_model=list[NotificationResponse])
 async def list_notifications(user_uuid: str, db: Session = Depends(get_pg_db)):
-    return db.query(Notification).filter(Notification.user_uuid == user_uuid).order_by(Notification.created_at.desc()).all()
+    return (
+        db.query(Notification)
+        .filter(Notification.user_uuid == user_uuid)
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+
 
 @app.patch("/api/notifications/{id}/read", response_model=NotificationResponse)
 async def mark_notification_read(id: str, db: Session = Depends(get_pg_db)):
@@ -995,6 +1110,7 @@ async def mark_notification_read(id: str, db: Session = Depends(get_pg_db)):
     db.commit()
     db.refresh(notif)
     return notif
+
 
 @app.delete("/api/notifications/{id}", status_code=204)
 async def delete_notification(id: str, db: Session = Depends(get_pg_db)):
@@ -1009,12 +1125,14 @@ async def delete_notification(id: str, db: Session = Depends(get_pg_db)):
 # Project Endpoints (MongoDB)
 # ==========================================
 
+
 def _check_org_membership(user_uuid: str, org_id: str, db: Session):
     """Verify user is a member of the org. Raises 403 if not."""
-    member = db.query(OrganizationMember).filter(
-        OrganizationMember.org_id == org_id,
-        OrganizationMember.user_uuid == user_uuid
-    ).first()
+    member = (
+        db.query(OrganizationMember)
+        .filter(OrganizationMember.org_id == org_id, OrganizationMember.user_uuid == user_uuid)
+        .first()
+    )
     if not member:
         raise HTTPException(status_code=403, detail="Not a member of this organization")
 
@@ -1034,19 +1152,23 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
     repo_path = None
     try:
         repo_path = clone_repo(req.repo_url, req.branch)
-        
+
         # Run Semgrep
         semgrep_raw = run_semgrep(repo_path)
-        semgrep_parsed = parse_semgrep_findings(semgrep_raw, req.company.deployment_exposure, repo_path)
-        
+        semgrep_parsed = parse_semgrep_findings(
+            semgrep_raw, req.company.deployment_exposure, repo_path
+        )
+
         # Run Trivy
         trivy_raw = run_trivy(repo_path)
         trivy_parsed = parse_trivy_findings(trivy_raw, req.company.deployment_exposure, repo_path)
-        
+
         # Merge Findings
         combined_parsed = semgrep_parsed + trivy_parsed
-        
-        results, chains, filtered = run_risk_engine(combined_parsed, req.company, req.gemini_api_key)
+
+        results, chains, filtered = run_risk_engine(
+            combined_parsed, req.company, req.gemini_api_key
+        )
         summary = generate_executive_summary(results, req.company, chains)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
@@ -1055,7 +1177,7 @@ async def create_project(req: ProjectCreate, db: Session = Depends(get_pg_db)):
             _rmtree_windows_safe(repo_path)
 
     # 3. Build the document
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     doc = {
         "repo_url": req.repo_url,
         "branch": req.branch,
@@ -1114,15 +1236,19 @@ async def solve_vulnerability(project_id: str, body: dict = Body(...)):
         raise HTTPException(status_code=422, detail="vulnerability_id is required")
 
     # Collect all available Gemini keys — rotate on 429 rate-limit
-    gemini_keys = [v for v in [
-        os.environ.get("GEMINI_API_KEY1"),
-        os.environ.get("GEMINI_API_KEY2"),
-        os.environ.get("GEMINI_API_KEY3"),
-        os.environ.get("GEMINI_API_KEY4"),
-        os.environ.get("GEMINI_API_KEY5"),
-        os.environ.get("GEMINI_API_KEY6"),
-        os.environ.get("GEMINI_API_KEY"),
-    ] if v]
+    gemini_keys = [
+        v
+        for v in [
+            os.environ.get("GEMINI_API_KEY1"),
+            os.environ.get("GEMINI_API_KEY2"),
+            os.environ.get("GEMINI_API_KEY3"),
+            os.environ.get("GEMINI_API_KEY4"),
+            os.environ.get("GEMINI_API_KEY5"),
+            os.environ.get("GEMINI_API_KEY6"),
+            os.environ.get("GEMINI_API_KEY"),
+        ]
+        if v
+    ]
     if not gemini_keys:
         raise HTTPException(status_code=500, detail="No Gemini API key configured in server .env")
 
@@ -1133,6 +1259,7 @@ async def solve_vulnerability(project_id: str, body: dict = Body(...)):
     # Fetch the project
     try:
         from bson import ObjectId
+
         obj_id = ObjectId(project_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Invalid project ID")
@@ -1145,7 +1272,9 @@ async def solve_vulnerability(project_id: str, body: dict = Body(...)):
     scan_results = doc.get("scan_results", [])
     vuln = next((r for r in scan_results if r.get("vulnerability_id") == vulnerability_id), None)
     if not vuln:
-        raise HTTPException(status_code=404, detail=f"Vulnerability '{vulnerability_id}' not found in project")
+        raise HTTPException(
+            status_code=404, detail=f"Vulnerability '{vulnerability_id}' not found in project"
+        )
 
     code_context = vuln.get("code_context", "")
     message = vuln.get("message", "")
@@ -1157,7 +1286,7 @@ async def solve_vulnerability(project_id: str, body: dict = Body(...)):
     if not code_context and not message:
         raise HTTPException(
             status_code=422,
-            detail="This vulnerability has no stored code context. Re-scan the project to capture code lines."
+            detail="This vulnerability has no stored code context. Re-scan the project to capture code lines.",
         )
 
     prompt = f"""You are a senior security engineer. A vulnerability was found in this codebase.
@@ -1184,8 +1313,9 @@ Respond ONLY with raw JSON — no markdown fences, no extra text:
 }}"""
 
     # Call Gemini with key rotation — skip to next key on 429
-    import google.generativeai as genai
     import json as _json
+
+    import google.generativeai as genai
 
     last_error = ""
     for attempt_key in gemini_keys:
@@ -1196,7 +1326,9 @@ Respond ONLY with raw JSON — no markdown fences, no extra text:
             text = response.text.strip()
             if text.startswith("```"):
                 lines_list = text.split("\n")
-                text = "\n".join(lines_list[1:-1] if lines_list[-1].strip() == "```" else lines_list[1:])
+                text = "\n".join(
+                    lines_list[1:-1] if lines_list[-1].strip() == "```" else lines_list[1:]
+                )
             fix_data = _json.loads(text)
             return {
                 "vulnerability_id": vulnerability_id,
@@ -1217,13 +1349,15 @@ Respond ONLY with raw JSON — no markdown fences, no extra text:
                 continue
             raise HTTPException(status_code=500, detail=f"Gemini analysis failed: {err_str}")
 
-    raise HTTPException(status_code=429, detail=f"All Gemini API keys are rate-limited. Try again in a minute.")
+    raise HTTPException(
+        status_code=429, detail="All Gemini API keys are rate-limited. Try again in a minute."
+    )
 
 
 @app.post("/api/projects/save", response_model=ProjectDetail)
 async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
     """Save pre-computed scan results as a project to MongoDB.
-    
+
     Unlike POST /api/projects which re-runs the scan, this endpoint
     accepts already-computed results (from /scan-repo streaming) and
     just persists them with the correct org_id + group_id.
@@ -1235,7 +1369,7 @@ async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
     if mongo is None:
         raise HTTPException(status_code=500, detail="MongoDB not connected")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     doc = {
         "repo_url": req.repo_url,
         "branch": req.branch,
@@ -1281,12 +1415,12 @@ async def save_project(req: ProjectSave, db: Session = Depends(get_pg_db)):
     )
 
 
-@app.get("/api/projects", response_model=List[ProjectSummary])
+@app.get("/api/projects", response_model=list[ProjectSummary])
 async def list_projects(
     org_id: str,
-    group_id: Optional[str] = None,
-    user_uuid: Optional[str] = None,
-    db: Session = Depends(get_pg_db)
+    group_id: str | None = None,
+    user_uuid: str | None = None,
+    db: Session = Depends(get_pg_db),
 ):
     """List projects for an org, optionally filtered by group."""
     if user_uuid:
@@ -1300,33 +1434,39 @@ async def list_projects(
     if group_id:
         query["group_id"] = group_id
 
-    cursor = mongo["projects"].find(
-        query,
-        {  # Projection: exclude heavy fields for list view
-            "scan_results": 0,
-            "attack_chains": 0,
-            "company": 0,
-            "executive_summary": 0,
-        }
-    ).sort("last_scanned_at", -1)
+    cursor = (
+        mongo["projects"]
+        .find(
+            query,
+            {  # Projection: exclude heavy fields for list view
+                "scan_results": 0,
+                "attack_chains": 0,
+                "company": 0,
+                "executive_summary": 0,
+            },
+        )
+        .sort("last_scanned_at", -1)
+    )
 
     projects = []
     async for doc in cursor:
-        projects.append(ProjectSummary(
-            id=str(doc["_id"]),
-            repo_url=doc["repo_url"],
-            branch=doc["branch"],
-            org_id=doc["org_id"],
-            group_id=doc["group_id"],
-            created_by=doc.get("created_by", ""),
-            created_at=doc.get("created_at", ""),
-            last_scanned_at=doc.get("last_scanned_at"),
-            status=doc.get("status", "completed"),
-            vulnerability_count=doc.get("vulnerability_count", 0),
-            total_expected_loss=doc.get("total_expected_loss", 0),
-            total_fix_cost=doc.get("total_fix_cost", 0),
-            gemini_enabled=doc.get("gemini_enabled", False),
-        ))
+        projects.append(
+            ProjectSummary(
+                id=str(doc["_id"]),
+                repo_url=doc["repo_url"],
+                branch=doc["branch"],
+                org_id=doc["org_id"],
+                group_id=doc["group_id"],
+                created_by=doc.get("created_by", ""),
+                created_at=doc.get("created_at", ""),
+                last_scanned_at=doc.get("last_scanned_at"),
+                status=doc.get("status", "completed"),
+                vulnerability_count=doc.get("vulnerability_count", 0),
+                total_expected_loss=doc.get("total_expected_loss", 0),
+                total_fix_cost=doc.get("total_fix_cost", 0),
+                gemini_enabled=doc.get("gemini_enabled", False),
+            )
+        )
     return projects
 
 
@@ -1334,6 +1474,7 @@ async def list_projects(
 async def get_project(project_id: str):
     """Get a single project with full scan results."""
     from bson import ObjectId
+
     mongo = get_mongo_db()
     if mongo is None:
         raise HTTPException(status_code=500, detail="MongoDB not connected")
@@ -1372,6 +1513,7 @@ async def get_project(project_id: str):
 async def delete_project(project_id: str):
     """Delete a project from MongoDB."""
     from bson import ObjectId
+
     mongo = get_mongo_db()
     if mongo is None:
         raise HTTPException(status_code=500, detail="MongoDB not connected")
@@ -1388,9 +1530,9 @@ async def delete_project(project_id: str):
 @app.post("/api/projects/scan-all")
 async def scan_all_projects(
     org_id: str,
-    group_id: Optional[str] = None,
-    user_uuid: Optional[str] = None,
-    db: Session = Depends(get_pg_db)
+    group_id: str | None = None,
+    user_uuid: str | None = None,
+    db: Session = Depends(get_pg_db),
 ):
     """Re-scan all projects for a given org/group."""
     if user_uuid:
@@ -1415,47 +1557,64 @@ async def scan_all_projects(
             company = CompanyContext(**doc["company"])
             gemini_key = None  # Don't use stored key for security
             repo_path = clone_repo(doc["repo_url"], doc["branch"])
-            
+
             # Run Semgrep
             semgrep_raw = run_semgrep(repo_path)
-            semgrep_parsed = parse_semgrep_findings(semgrep_raw, company.deployment_exposure, repo_path)
-            
+            semgrep_parsed = parse_semgrep_findings(
+                semgrep_raw, company.deployment_exposure, repo_path
+            )
+
             # Run Trivy
             trivy_raw = run_trivy(repo_path)
             trivy_parsed = parse_trivy_findings(trivy_raw, company.deployment_exposure, repo_path)
-            
+
             # Merge Findings
             combined_parsed = semgrep_parsed + trivy_parsed
-            
+
             scan_results, chains, filtered = run_risk_engine(combined_parsed, company, gemini_key)
             summary = generate_executive_summary(scan_results, company, chains)
 
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             from bson import ObjectId
+
             await mongo["projects"].update_one(
                 {"_id": ObjectId(project_id)},
-                {"$set": {
-                    "scan_results": [r.dict() for r in scan_results],
-                    "attack_chains": [c.dict() for c in chains],
-                    "executive_summary": summary,
-                    "total_expected_loss": sum(r.expected_loss for r in scan_results),
-                    "total_fix_cost": sum(r.fix_cost_usd for r in scan_results),
-                    "vulnerability_count": len(scan_results),
-                    "filtered_count": filtered,
-                    "gemini_enabled": False,
-                    "last_scanned_at": now,
-                    "status": "completed",
-                }}
+                {
+                    "$set": {
+                        "scan_results": [r.dict() for r in scan_results],
+                        "attack_chains": [c.dict() for c in chains],
+                        "executive_summary": summary,
+                        "total_expected_loss": sum(r.expected_loss for r in scan_results),
+                        "total_fix_cost": sum(r.fix_cost_usd for r in scan_results),
+                        "vulnerability_count": len(scan_results),
+                        "filtered_count": filtered,
+                        "gemini_enabled": False,
+                        "last_scanned_at": now,
+                        "status": "completed",
+                    }
+                },
             )
-            results_summary.append({"project_id": project_id, "status": "completed", "vulnerabilities": len(scan_results)})
+            results_summary.append(
+                {
+                    "project_id": project_id,
+                    "status": "completed",
+                    "vulnerabilities": len(scan_results),
+                }
+            )
         except Exception as e:
             errors.append({"project_id": project_id, "error": str(e)})
             # Mark as failed in DB
             try:
                 from bson import ObjectId
+
                 await mongo["projects"].update_one(
                     {"_id": ObjectId(project_id)},
-                    {"$set": {"status": "failed", "last_scanned_at": datetime.now(timezone.utc).isoformat()}}
+                    {
+                        "$set": {
+                            "status": "failed",
+                            "last_scanned_at": datetime.now(UTC).isoformat(),
+                        }
+                    },
                 )
             except Exception:
                 pass
@@ -1470,10 +1629,12 @@ async def scan_all_projects(
         "errors": errors,
     }
 
+
 @app.post("/api/send-report")
 async def send_report_endpoint(payload: ReportPayload):
     try:
         from utils.email_utils import send_report_email
+
         await send_report_email(
             payload.to_email,
             payload.company_name,
@@ -1482,7 +1643,7 @@ async def send_report_endpoint(payload: ReportPayload):
             payload.total_fix_cost,
             payload.vulnerability_count,
             payload.top_risks,
-            payload.attack_chains
+            payload.attack_chains,
         )
         return {"status": "sent", "to": payload.to_email}
     except Exception as e:

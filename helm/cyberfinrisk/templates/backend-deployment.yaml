@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cyberfinrisk.fullname" . }}-backend
+  labels:
+    app: cyberfinrisk
+    component: backend
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: cyberfinrisk
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: cyberfinrisk
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.backend.port }}
+          env:
+            - name: GEMINI_API_KEY
+              value: {{ .Values.gemini.apiKey | quote }}
+            - name: MONGODB_URI
+              value: {{ .Values.mongodb.uri | quote }}
+            - name: POSTGRES_HOST
+              value: {{ .Values.postgresql.host | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.postgresql.port | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgresql.password | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.backend.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.backend.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources.backend | nindent 12 }}
