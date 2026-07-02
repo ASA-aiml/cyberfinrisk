@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+
 
 class ImpactBreakdown(BaseModel):
     data_breach_cost: float
@@ -8,25 +8,45 @@ class ImpactBreakdown(BaseModel):
     regulatory_penalty: float
     reputation_damage: float
 
+    def model_dump(self):
+        return {
+            "data_breach_cost": self.data_breach_cost,
+            "incident_response_cost": self.incident_response_cost,
+            "downtime_cost": self.downtime_cost,
+            "regulatory_penalty": self.regulatory_penalty,
+            "reputation_damage": self.reputation_damage,
+        }
+
+
 class GeminiAnalysis(BaseModel):
     is_exploitable: bool
-    exploitability_confidence: str       # "high", "medium", "low"
-    exploitability_reasoning: str        # plain English explanation
-    business_context: str                # what this endpoint/code actually does
-    authentication_required: str = "unknown" # e.g. "public_unauthenticated", "admin_only"
-    data_scope: str = "unknown"          # e.g. "full_database", "system_files"
-    adjusted_probability: float          # Gemini-adjusted probability (vs table default)
-    false_positive_likelihood: str       # "high", "medium", "low"
-    recommended_fix: str                 # actual fix code or instructions
-    fix_complexity: str                  # "simple", "moderate", "complex"
+    exploitability_confidence: str  # "high", "medium", "low"
+    exploitability_reasoning: str  # plain English explanation
+    business_context: str  # what this endpoint/code actually does
+    authentication_required: str = "unknown"
+    data_scope: str = "unknown"
+    adjusted_probability: float
+    false_positive_likelihood: str
+    recommended_fix: str
+    fix_complexity: str
+
 
 class AttackChain(BaseModel):
     chain_id: str
-    vulnerability_ids: List[str]
-    chain_description: str               # plain English attack path
-    combined_severity: str               # "critical", "high", "medium"
+    vulnerability_ids: list[str]
+    chain_description: str
+    combined_severity: str
     combined_expected_loss: float
-    chain_steps: List[str]               # step-by-step attack narrative
+    chain_steps: list[str]
+
+
+class ConfidenceInterval(BaseModel):
+    p10: float  # 10th percentile (optimistic)
+    p50: float  # 50th percentile (median expected loss)
+    p90: float  # 90th percentile (pessimistic)
+    mean: float  # arithmetic mean
+    iterations: int = 10000  # Monte Carlo iterations used
+
 
 class RiskResult(BaseModel):
     vulnerability_id: str
@@ -35,17 +55,20 @@ class RiskResult(BaseModel):
     line: int
     severity: str
     exposure: str
-    code_context: str = ""                # actual code lines around the vulnerability
-    message: str = ""                     # scanner's description of the issue
-    probability_of_exploit: float        # table-based baseline
-    gemini_analysis: Optional[GeminiAnalysis] = None
-    effective_probability: float         # final probability after Gemini adjustment
+    code_context: str = ""
+    message: str = ""
+    probability_of_exploit: float
+    gemini_analysis: GeminiAnalysis | None = None
+    effective_probability: float
     impact_breakdown: ImpactBreakdown
     total_impact: float
-    expected_loss: float
+    expected_loss: float  # P50 from Monte Carlo
+    expected_loss_p10: float = 0.0  # 10th percentile
+    expected_loss_p90: float = 0.0  # 90th percentile
+    risk_score: int = 0  # 0-1000 normalized
     fix_effort_hours: float
     fix_cost_usd: float
     priority_score: float
     roi_of_fixing: float
     business_brief: str
-    attack_chains: Optional[List[str]] = None   # chain IDs this vuln belongs to
+    attack_chains: list[str] | None = None

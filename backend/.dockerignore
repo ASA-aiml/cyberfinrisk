@@ -1,0 +1,17 @@
+venv
+__pycache__
+*.pyc
+*.pyo
+.env
+.git
+.gitignore
+**/.pytest_cache
+**/.ruff_cache
+Doc
+data
+frontend
+static
+semgrep_output.json
+trivy_output.json
+graph_output.json
+package-lock.json

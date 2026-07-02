@@ -1,0 +1,62 @@
+replicaCount: 1
+
+image:
+  backend:
+    repository: ghcr.io/shadil-rayyan/cyberfinrisk-backend
+    tag: latest
+    pullPolicy: Always
+  frontend:
+    repository: ghcr.io/shadil-rayyan/cyberfinrisk-frontend
+    tag: latest
+    pullPolicy: Always
+
+service:
+  backend:
+    port: 8000
+  frontend:
+    port: 3000
+
+ingress:
+  enabled: true
+  host: cyberfinrisk.local
+  tls: {}
+
+mongodb:
+  uri: "mongodb://mongo:27017"
+  database: "cyberfinrisk"
+
+postgresql:
+  host: "postgres"
+  port: 5432
+  database: "cyberfinrisk"
+  user: "app"
+  password: ""
+
+gemini:
+  apiKey: ""
+
+otel:
+  enabled: false
+  collectorVersion: "0.120.0"
+  collectorEndpoint: "http://otel-collector:4317"
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    release: "kube-prometheus-stack"
+
+resources:
+  backend:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  frontend:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
