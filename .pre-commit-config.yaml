@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(backend/|tests/)
+      - id: ruff-format
+        files: ^(backend/|tests/)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^(backend/|tests/)
+      - id: end-of-file-fixer
+        files: ^(backend/|tests/)
+      - id: check-json
+        files: ^backend/knowledge_base/
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: bash -c 'cd backend && PYTHONPATH=. python -m pytest ../tests/ -q --tb=short'
+        language: system
+        types: [python]
+        files: ^(backend/engine/|tests/)
+        pass_filenames: false

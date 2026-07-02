@@ -1,0 +1,137 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "backend/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "backend/**"
+      - "tests/**"
+      - "pyproject.toml"
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Lint backend Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: backend/Dockerfile
+          failure-threshold: warning
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+      - run: pip install ruff
+      - run: ruff check backend/ tests/ --output-format=github
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+      - run: pip install -r backend/requirements.txt pytest
+      - name: Run tests
+        run: PYTHONPATH=backend:$PYTHONPATH python -m pytest tests/ -v --tb=short --junitxml=junit.xml
+        timeout-minutes: 5
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results
+          path: junit.xml
+
+  engine-demo:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+      - run: pip install -r backend/requirements.txt
+      - name: Run engine self-check
+        run: PYTHONPATH=backend:$PYTHONPATH python -m backend.engine.__main__
+        timeout-minutes: 2
+
+  trivy-scan:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Trivy on backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "backend/"
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          format: "sarif"
+          output: "trivy-results.sarif"
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  sonarqube:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v7
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
+        with:
+          projectBaseDir: backend/
+          args: >
+            -Dsonar.projectKey=cyberfinrisk-backend
+            -Dsonar.sources=.
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [test, trivy-scan]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push backend
+        uses: docker/build-push-action@v7
+        with:
+          context: backend/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-backend:latest
+            ghcr.io/${{ github.repository }}-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

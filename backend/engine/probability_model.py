@@ -1,23 +1,31 @@
 import json
 import logging
-from typing import Dict, Optional
+import os
+
 from engine.epss_client import get_epss_score
 
 logger = logging.getLogger(__name__)
 
-def load_probabilities() -> Dict:
-    with open("knowledge_base/exploit_probability.json") as f:
+_KB_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "knowledge_base"
+)
+
+
+def load_probabilities() -> dict:
+    path = os.path.join(_KB_DIR, "exploit_probability.json")
+    with open(path) as f:
         return json.load(f)
+
 
 def get_probability(
     bug_type: str,
     exposure: str,
-    probabilities: Dict,
-    cve_id: Optional[str] = None,
+    probabilities: dict,
+    cve_id: str | None = None,
 ) -> tuple[float, str]:
     """
     Returns (probability: float, source: str).
-    
+
     For known CVEs (from Trivy), fetches a real-world exploit probability
     from the EPSS API (FIRST.org). This is far more accurate than static
     base rates, e.g., CVE-2023-44487 (HTTP/2 RapidReset) has EPSS ~0.97.
@@ -36,7 +44,5 @@ def get_probability(
             return final_score, f"epss:{cve_id}"
 
     # Fallback: knowledge-base base rates (Semgrep, or CVE without EPSS data)
-    base_rate = probabilities.get(bug_type, probabilities["UNKNOWN"]).get(
-        exposure.upper(), 0.05
-    )
+    base_rate = probabilities.get(bug_type, probabilities["UNKNOWN"]).get(exposure.upper(), 0.05)
     return base_rate, "knowledge_base"

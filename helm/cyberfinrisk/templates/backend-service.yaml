@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cyberfinrisk.fullname" . }}-backend
+  labels:
+    app: cyberfinrisk
+    component: backend
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.backend.port }}
+      targetPort: {{ .Values.service.backend.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: cyberfinrisk
+    component: backend
