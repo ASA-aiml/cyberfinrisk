@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 LABEL org.opencontainers.image.source="https://github.com/ASA-aiml/cyberfinrisk"
 LABEL org.opencontainers.image.description="CyberFinRisk Backend — Vulnerability Financial Impact Engine"
 LABEL org.opencontainers.image.licenses="MIT"
