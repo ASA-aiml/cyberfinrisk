@@ -19,6 +19,16 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint backend Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: backend/Dockerfile
+          failure-threshold: warning
+
   lint:
     runs-on: ubuntu-latest
     steps:

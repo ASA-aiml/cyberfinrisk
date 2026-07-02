@@ -1,0 +1,17 @@
+# Each line is a file pattern followed by one or more owners
+
+# Default owner
+* @shadil-rayyan
+
+# Backend ownership
+/backend/ @shadil-rayyan
+
+# Frontend ownership
+/frontend/ @shadil-rayyan
+
+# Documentation
+/README.md @shadil-rayyan
+/SECURITY.md @shadil-rayyan
+
+# CI/CD
+/.github/ @shadil-rayyan

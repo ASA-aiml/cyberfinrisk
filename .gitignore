@@ -1,1 +1,18 @@
 backend/engine/trivy
+venv/
+__pycache__/
+*.pyc
+.env
+*.log
+.DS_Store
+
+# Test artifacts
+frontend/playwright-report/
+frontend/test-results/
+frontend/.scannerwork/
+
+# Generated data
+backend/data/risk_results.json
+backend/semgrep_output.json
+backend/trivy_output.json
+backend/graph_output.json
